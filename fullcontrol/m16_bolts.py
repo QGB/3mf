@@ -1,9 +1,9 @@
 import fullcontrol as fc
 from math import tau
 import lab.fullcontrol as fclab
+import sys,os;'qgb.U' in sys.modules or sys.path.append('C:/QGB/Anaconda3/Lib/site-packages/Pythonwin/');from qgb import *
 
 # 全局参数
-design_name = "M16_BOLT"
 nozzle_temp = 210
 bed_temp = 60
 print_speed = 4000
@@ -15,8 +15,10 @@ z_offset = 0.2
 
 # 你给的螺栓参数
 part_type = "wing_bolt"
-dia_major, dia_minor, pitch = 16, 14.3,2
-bolt_or_tube_thread_length = 60
+dia_major, dia_minor, pitch = 15.8, 14.1,2
+# dia_major, dia_minor, pitch = 13.2, 11.5,2
+bolt_or_tube_thread_length = 200
+design_name = f"M{dia_major}_{pitch}_{bolt_or_tube_thread_length}L_BOLT"
 wing_height = 0.75 * dia_major
 clearance = 0.1
 EH = 0.15
@@ -83,7 +85,7 @@ for i in range(layers):
         steps.extend(fclab.bezierXYdiscrete(bez2, 32))
 
 # 精简启动代码
-custom_start = f"""; M16翼型螺栓
+custom_start = f"""
 M140 S60 ; 热床
 M104 S210 ; 喷头
 G28 ; 归零
@@ -120,8 +122,9 @@ gcode_clean = gcode_base.split(";\n")[-1]
 # 结束代码
 end_code = """
 G1 E-3.0 F2400 ; 回抽防瘤
-G1 Z15 F3000 ; 抬Z
-G1 X0 Y220 F6000 ; 快速移开
+G91 ; 切换相对坐标
+G1 Z15 F2000 ; 抬Z
+G1 X0 Y220 F4000 ; 快速移开
 M106 S0 ; 关风扇
 M104 S0 ; 关喷头
 M140 S0 ; 关热床
@@ -131,7 +134,9 @@ M84 ; 关电机
 
 # 保存
 gcode_final = custom_start + "\n" + gcode_clean + end_code
-filename = f"{design_name}_FINAL.gcode"
+filename = f"{design_name}.gcode"
 with open(filename, "w") as f:
     f.write(gcode_final)
-print(f"✅ 生成完成: {filename}")
+sfp=os.path.realpath(filename)    
+# print(f"生成完成: \n{sfp}")
+U.cbs(sfp,p=1)
