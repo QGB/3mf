@@ -80,7 +80,7 @@ result = (
 # --- 3.6 六角盲孔 (对边 6) ---
 result = (
     result.workplane(offset=0-1) #实际4mm
-    .pushPoints([(-13,43),(13,43)]) # 坐标和正面完全一致
+    .pushPoints([(-14,43),(14,42.3)]) # 坐标和正面完全一致
     .polygon(nSides=7, diameter=12/ sqrt(3))
     .cutBlind(-11)  # 向上切5mm（背面朝向+Z方向）
 )
