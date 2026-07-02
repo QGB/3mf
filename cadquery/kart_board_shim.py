@@ -82,7 +82,7 @@ board = drill_holes(board, holes_5, 5.0)  # 切削你的 holes_5
 # 对边距离 10mm 换算为外接圆直径 20 / sqrt(3)
 hex_dia = 11 * 2 / math.sqrt(3)
 cq_hex_centers = [
-    [-13.5+1-4,  11.5],  # 对应 KiCad 的 [35, 37.9]
+    [-13.5+1-4-0.1,  9],  # 对应 KiCad 的 [35, 37.9]
     [ 14+1.5-3+1.5,  9.4],  # 对应 KiCad 的 [65, 37.9]
     [-15.0, -25+1.1],  # 对应 KiCad 的 [35, 72.4]
     [ 15.0, -25]   # 对应 KiCad 的 [65, 72.4]
@@ -111,8 +111,9 @@ board = board.intersect(crop_box)
 
 # ================== 6.5 【实心盲槽方案】上表面下切 0.1mm 且彻底抹平数字孤岛 ==================
 # 1. 先在原点生成高度为 1.0 的标准文本（此时字体的顶面精确位于 Z = 1.0）
+smark=U.get_time_str_mark(sep=' ')
 raw_text = cq.Workplane("XY").text(
-    U.stime()[12:14], fontsize=8, distance=0.9, font="Arial", halign="center", valign="center"
+    smark, fontsize=8, distance=0.9, font="Arial", halign="center", valign="center"
 )
 
 # 2. 核心几何大招：提取文本顶面，并只保留外围轮廓（outerWire），从而彻底将“0”内部的孔洞填平为纯实心面
@@ -124,7 +125,7 @@ filled_faces = [cq.Face.makeFromWires(f.outerWire()) for f in raw_text.faces(">Z
 text_cutter = (
     cq.Workplane("XY")
     .add(cq.Compound.makeCompound(filled_faces))
-    .translate((crop_cq_x, 1, -0.9))  # 精准定位 X、Y，并将面降落到 Z=0.1
+    .translate((crop_cq_x, -5, -0.9))  # 精准定位 X、Y，并将面降落到 Z=0.1
     .extrude(0.5)                     # 向上拉伸 0.5mm，完美覆盖并切除 Z=0.1 至 Z=0.2 的空间
 )
 
@@ -169,7 +170,7 @@ for n in nums_flat:
         unique_nums.append(str(n))
 
 snum = ",".join(unique_nums)
-step_file = __file__ + f"{snum}.step"
+step_file = f''+__file__ + f"{smark}.step"
 cq.exporters.export(board, step_file)
 
 if "show_object" in globals():
