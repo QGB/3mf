@@ -4,11 +4,11 @@ import sys
 import json
 import math
 import cadquery as cq
-
+import bambu_slicer
 # ================== 1. 基础参数 ==================
 board_w = 100.0  
 board_h = 100.4  
-t = 5.5          
+t =0.4
 
 # ================== 2. 创建主板实体 ==================
 board = cq.Workplane("XY").box(board_w, board_h, t)
@@ -54,7 +54,7 @@ crop_cq_y = board_h / 2.0 - (board_h - 40.0)
 crop_box = (
     cq.Workplane("XY")
     .center(crop_cq_x, crop_cq_y)
-    .box(60.0, 80.0, t + 2)  
+    .box(60.0, 88, t + 2)  
 )
 board = board.intersect(crop_box)
 
@@ -81,12 +81,12 @@ board = drill_holes(board, holes_5, 5.0)
 
 
 # ================== 5. 后执行正六角孔切削 ==================
-hex_dia = 11 * 2 / math.sqrt(3)
+hex_dia = 11.2 * 2 / math.sqrt(3)
 cq_hex_centers = [
-    [-13.5+1-4-0.1+1.5,  9-0.4],  
-    [ 14+1.5-3+1.5,  9.4-0.2],  
-    [-15.0, -25+1.1],  
-    [ 15.0, -25]   
+    [-16.6+2,  9],  # 对应 KiCad 的 [35, 37.9]
+    [ 14+0.3,  9.4],  # 对应 KiCad 的 [65, 37.9]
+    [-15.0, -25+1.1],  # 对应 KiCad 的 [35, 72.4]
+    [ 15.0, -25]   # 对应 KiCad 的 [65, 72.4]
 ]
 for cq_hx, cq_hy in cq_hex_centers:
     hex_cutter = (
@@ -138,7 +138,7 @@ text_cutter = (
     cq.Workplane("XY")
     .workplane(offset=t/2.0)                               
     .center(crop_cq_x * x_scale, -5 * y_scale)             
-    .text(smark, fontsize=8, distance=-0.5, font="Arial", halign="center", valign="center", combine=False)
+    .text(smark, fontsize=8, distance=-0.1, font="Arial", halign="center", valign="center", combine=False)
 )
 board = board.cut(text_cutter)
 
@@ -160,12 +160,21 @@ preview_squares = (
 )
 
 preview_dots = (
-    cq.Workplane("XY")
+    cq.Workplane("XY")  
     .workplane(offset=t/2 + 0.06)
     .pushPoints(flipped_dots)     
-    .circle(0.5)       
+    .circle(0.5)
     .extrude(0.01)
 )
+
+
+if t>2:board = bambu_slicer.add_brim(board, 10)#防止翘边，不要去除注释
+
+out_shape=bambu_slicer.get_bottom_outer_contour_points(board)
+polluted_hex_pts = bambu_slicer.super_feature_detector(board, feature_type="hexagon")
+print(f"\n六边形 共 {len(polluted_hex_pts)} 个）： out_shape：\n {out_shape}")
+for i, pt in enumerate(polluted_hex_pts):
+    print(f"  六边形 {i+1} -> X: {pt[0]},  Y: {pt[1]},  Z: {pt[2]}")
 
 # ================== 10. 导出与切片预览 ==================
 nums_flat = []
@@ -185,7 +194,7 @@ if "show_object" in globals():
     show_object(preview_squares, name="Silk_Squares", options={"rgba": (0.0, 1.0, 0.0, 0.6)})
     show_object(preview_dots, name="Helper_Dots", options={"rgba": (1.0, 0.0, 0.0, 0.7)})
     
-import bambu_slicer
+
 f = bambu_slicer.to_gcode(
     cq_object=board, 
     name=step_file, 

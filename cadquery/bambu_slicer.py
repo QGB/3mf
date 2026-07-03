@@ -1,3 +1,4 @@
+import sys;'qgb.U' in sys.modules or sys.path.append('C:/QGB/Anaconda3/Lib/site-packages/Pythonwin/');from qgb import *
 import os,sys,json,shutil
 import subprocess
 import zipfile
@@ -34,9 +35,10 @@ def _preprocess_dependent_json(src_path, safe_name, type_tag, model_token):
         sys.exit(1)
 
 
-def to_gcode(cq_object, name="cq_model", output_dir=None, layer_height="0.249mm", material="PLA", printer_name="Elegoo Neptune 4", print_time="17m34s"):
+def to_gcode(cq_object, name="cq_model", output_dir=None,add_brim=0, layer_height="0.249mm", material="PLA", printer_name="Elegoo Neptune 4", print_time="17m34s"):
     """
     升级版封装：将 CadQuery 对象直接切片，防呆净化路径，成功则返回 G-code 绝对路径
+    #todo add_brim
     """
     # 核心修复：自动提取纯文件名，并剔除可能随路径传入的扩展名
     clean_name = os.path.basename(name)
@@ -138,7 +140,224 @@ def to_gcode(cq_object, name="cq_model", output_dir=None, layer_height="0.249mm"
     else:
         print("[ERROR] 未找到生成的临时 3mf 文件。")
         return None
+########################
+# ==========================================
+# 2. 顶面时间标注函数（绝对单向传递 smark）
+def add_time_mark(obj):
+    smark = U.get_time_str_mark(sep=' ')
+    bbox = obj.val().BoundingBox()
+    current_t = bbox.zlen
+    
+    text_cutter = (
+        cq.Workplane("XY")
+        .workplane(offset=current_t / 2.0)                                
+        .center(0.0, -7.5)  
+        .text(smark, fontsize=8, distance=-0.1, font="Arial", halign="center", valign="center", combine=False)
+    )
+    res_obj = obj.cut(text_cutter)
+    if len(res_obj.solids().vals()) > 1:
+        res_obj = cq.Workplane(obj=max(res_obj.solids().vals(), key=lambda s: s.Volume()))
         
+    return res_obj, smark  # <--- 同时吐出实体和时间戳，彻底解决跨模块修改失败问题
+
+
+def add_brim(obj, extend=10.0, thickness=0.4):
+    """
+    【任意异形完美适配版 - 修正版】
+    """
+    bbox = obj.val().BoundingBox()
+    zmin = bbox.zmin
+    
+    # 1. 提取最底部的面 Workplane
+    bottom_faces = obj.faces("<Z")
+    
+    # 2. 【修正关键】：使用 .val() 获取真实的 Face 对象，再提取最外圈外轮廓
+    outer_wire = bottom_faces.val().outerWire()
+    
+    try:
+        # 3. 绘制外扩后的实体
+        outer_solid = (
+            cq.Workplane("XY", origin=(0, 0, zmin))
+            .add(outer_wire)
+            .toPending()
+            .offset2D(extend, kind="arc") 
+            .extrude(thickness)
+        )
+        
+        # 4. 绘制未外扩的原始实体
+        inner_solid = (
+            cq.Workplane("XY", origin=(0, 0, zmin))
+            .add(outer_wire)
+            .toPending()
+            .extrude(thickness)
+        )
+        
+        # 5. 外大圈 减去 内小圈 = 得到紧贴外沿的中空裙边
+        brim_frame = outer_solid.cut(inner_solid)
+        
+        # 6. 和原模型求并集
+        return obj.union(brim_frame)
+        
+    except Exception as e:
+        print(f"[Brim Warning] 异形轮廓放大失败 ({e})，自动降级为包围盒标准矩形裙边！")
+        # 如果报错，在此处调用你之前基于 BoundingBox 写的绝对稳定的标准矩形裙边函数作兜底
+        return add_brim_bounding_box(obj, extend, thickness)
+
+
+def get_bottom_outer_contour_points(obj):
+    """
+    寻找物体的绝对底面，并输出其外轮廓(outerWire)的顶点坐标列表。
+    暂时不处理圆弧离散化，仅提取特征几何顶点。
+关于未来“圆弧怎么解决”的剧透：
+如果以后你的主板外围变成了带圆角的矩形，或者圆形板，Vertices() 就只会吐出圆弧的起点和终点，导致坐标残缺。那时候最完美的 Pro 级解法不是去数点，而是调用 outer_wire.tessellate(tolerance)。这是 3D 引擎底层的网格离散化/弦高差采样，它能根据你给的精度（比如 0.1mm），自动把任何圆弧、样条曲线均匀地切成一连串微小的直线段，并吐出完美的、连续的高精度围栏坐标轨迹。不过既然目前是纯矩形边界，上面这个数顶点的函数已经足够精准高效！    
+    """
+    import cadquery as cq
+    # 1. 自动解包 Workplane 获取底层 Solid
+    solid = obj.val() if hasattr(obj, "val") else obj
+    if not solid:
+        return []
+        
+    bottom_face = None
+    min_z = float('inf')
+    
+    # 2. 扫描所有面，锁定 Z 轴位置最低的那个【水平底面】
+    for face in solid.Faces():
+        # 依靠法线方向判断是否为水平面 (Z 轴分量接近 1 或 -1)
+        if abs(face.normalAt().z) > 0.99:
+            face_z = face.Center().z
+            if face_z < min_z:
+                min_z = face_z
+                bottom_face = face
+                
+    if not bottom_face:
+        print("❌ 未找到有效的水平底面")
+        return []
+        
+    # 3. 提取底面的最外围轮廓 (outerWire)
+    outer_wire = bottom_face.outerWire()
+    if not outer_wire:
+        print("❌ 该底面没有有效的外轮廓")
+        return []
+        
+    # 4. 提取顶点坐标 (保留 2 位小数)
+    # 因为 OCCT 的 Wire.Vertices() 本身就是带有拓扑顺序的（顺时针或逆时针），
+    # 我们直接顺着线圈提取，并做个邻近去重即可。
+    raw_vertices = outer_wire.Vertices()
+    coordinate_list = []
+    
+    for v in raw_vertices:
+        pt = (round(v.X, 2), round(v.Y, 2))
+        # 仅去除首尾闭合或重复的相邻点，保持原汁原味的拓扑走向
+        if not coordinate_list or pt != coordinate_list[-1]:
+            coordinate_list.append(pt)
+            
+    # 如果首尾因为闭合导致重复，切掉最后一个点
+    if len(coordinate_list) > 1 and coordinate_list[0] == coordinate_list[-1]:
+        coordinate_list.pop()
+        
+    return coordinate_list        
+        
+
+def super_feature_detector(obj, feature_type="circle", target_size=None):
+    """
+    【究极空间拓扑探测器 - 几何本质版】
+    抛弃脆弱的顶点容差去重，直接对底层 Wire 的边缘属性进行拓扑断言。
+    """
+            
+    import cadquery as cq
+    import math
+    from OCP.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Line
+    # 自动解包获取底层 Solid，防止传入 Workplane 导致类型不匹配
+    solid = obj.val() if hasattr(obj, "val") else obj
+    if not solid:
+        return []
+        
+    results = []
+    
+    # ====================================================
+    # A：圆柱孔/残缺圆探测
+    # ====================================================
+    if feature_type == "circle":
+        for edge in solid.Edges():
+            if edge.GeometryType() == "CIRCLE":
+                try:
+                    adaptor = BRepAdaptor_Curve(edge.wrapped)
+                    circ = adaptor.Circle()
+                    pnt = circ.Location()
+                    radius = round(circ.Radius(), 2)
+                    
+                    # 尺寸过滤
+                    if target_size is not None and not math.isclose(radius, target_size, abs_tol=0.1):
+                        continue
+                        
+                    # 获取中心点
+                    pos = (round(pnt.X(), 2), round(pnt.Y(), 2), round(pnt.Z(), 2))
+                    
+                    # XY 通道去重：同一个圆柱孔的上下边缘视为同一个孔
+                    if not any(math.isclose(pos[0], ep[0], abs_tol=0.2) and 
+                               math.isclose(pos[1], ep[1], abs_tol=0.2) for ep in results):
+                        results.append(pos)
+                except Exception:
+                    pass
+
+    # ====================================================
+    # B：六边形螺母孔探测 (Pro 级边数断言法)
+    # ====================================================
+    elif feature_type == "hexagon":
+        for face in solid.Faces():
+            try:
+                # 1. 过滤非平面
+                surf = BRepAdaptor_Surface(face.wrapped)
+                if surf.GetType() != GeomAbs_Plane:
+                    continue
+                
+                # 2. 过滤非水平面（只看法线平行于 Z 轴的平面）
+                gp_pln = surf.Plane()
+                if abs(gp_pln.Axis().Direction().Z()) < 0.99:
+                    continue
+                
+                # 3. 提取面上所有线圈 (合并外边界和所有内挖孔边界)
+                wires = []
+                if face.outerWire():
+                    wires.append(face.outerWire())
+                wires.extend(face.innerWires())
+                
+                # 4. 遍历线圈，进行几何本质断言
+                for wire in wires:
+                    edges = wire.Edges()
+                    
+                    # 核心突破：一个纯正的六边形孔，它的边缘数量绝对、严格等于 6
+                    if len(edges) == 6:
+                        
+                        # 严谨校验：确保这 6 条边全是直线，而不是什么被切成 6 段的弧线
+                        is_perfect_hex = True
+                        for edge in edges:
+                            curve_adaptor = BRepAdaptor_Curve(edge.wrapped)
+                            if curve_adaptor.GetType() != GeomAbs_Line:
+                                is_perfect_hex = False
+                                break
+                        
+                        # 如果确实是 6 条直线组成的封闭多边形
+                        if is_perfect_hex:
+                            center = wire.Center()
+                            pos = (round(center.x, 2), round(center.y, 2), round(center.z, 2))
+                            
+                            # 垂直通道去重：通孔会在顶面和底面各留下一个六边形线圈，坐标 XY 相同即视为同一个孔
+                            if not any(math.isclose(pos[0], ep[0], abs_tol=0.5) and 
+                                       math.isclose(pos[1], ep[1], abs_tol=0.5) for ep in results):
+                                results.append(pos)
+            except Exception:
+                pass
+                
+    return results
+        
+        
+        
+        
+        
+
+
         
         
 import time,requests
