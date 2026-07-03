@@ -10,7 +10,6 @@ DEFAULT_BAMBU_EXE = r"D:\Bambu Studio\bambu-studio.exe"
 DEFAULT_MACHINE_JSON =r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user\1154792620\machine\Elegoo Neptune 4 0.2 nozzle - 拷贝.json"
 DEFAULT_FILAMENT_JSON=r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user\1154792620\filament\66-55.json"
 DEFAULT_PROCESS_JSON =r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user\1154792620\process\填充44  skirt5.json"
-DEFAULT_PROCESS_JSON =r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user\1154792620\process\填充44  skirt5.json"
 #__import__('ctypes').windll.user32.MessageBoxW(0, 'text', 'title', 0)
 
 def _preprocess_dependent_json(src_path, safe_name, type_tag, model_token):
@@ -32,7 +31,8 @@ def _preprocess_dependent_json(src_path, safe_name, type_tag, model_token):
         return tmp_dest
     except Exception as e:
         print(f"[ERROR] 强制对齐配置失败 [{safe_name}]: {e}")
-        sys.exit(1)
+        # sys.exit(1)
+        raise e
 
 
 def to_gcode(cq_object, name="cq_model", output_dir=None,add_brim=0, layer_height="0.249mm", material="PLA", printer_name="Elegoo Neptune 4", print_time="17m34s"):
@@ -141,18 +141,42 @@ def to_gcode(cq_object, name="cq_model", output_dir=None,add_brim=0, layer_heigh
         print("[ERROR] 未找到生成的临时 3mf 文件。")
         return None
 ########################
+
+def flip_model(solid, angle, axis='y'):
+    axis = axis.lower()
+    x_scale, y_scale = 1, 1
+    if axis == 'x':
+        vec = (1, 0, 0)
+        if angle % 360 == 180: y_scale = -1
+    elif axis == 'y':
+        vec = (0, 1, 0)
+        if angle % 360 == 180: x_scale = -1
+    else:
+        vec = (0, 0, 1)
+        if angle % 360 == 180: x_scale, y_scale = -1, -1
+            
+    rotated_solid = solid.rotate((0, 0, 0), vec, angle)
+    return rotated_solid, x_scale, y_scale
+
 # ==========================================
 # 2. 顶面时间标注函数（绝对单向传递 smark）
-def add_time_mark(obj):
-    smark = U.get_time_str_mark(sep=' ')
+def add_time_mark(obj,smark='',x=0,y=-7.5,plane='top'):
+    if not smark:
+        smark = U.get_time_str_mark(sep=' ')
     bbox = obj.val().BoundingBox()
     current_t = bbox.zlen
-    
+    if plane=='top':
+        offset=current_t / 2.0
+        distance=-0.1
+    if plane=='bottom':
+        offset=-current_t / 2.0
+        distance=0.1
+        
     text_cutter = (
         cq.Workplane("XY")
-        .workplane(offset=current_t / 2.0)                                
-        .center(0.0, -7.5)  
-        .text(smark, fontsize=8, distance=-0.1, font="Arial", halign="center", valign="center", combine=False)
+        .workplane(offset=offset)                                
+        .center(x,y)  
+        .text(smark, fontsize=8, distance=distance, font="Arial", halign="center", valign="center", combine=False)
     )
     res_obj = obj.cut(text_cutter)
     if len(res_obj.solids().vals()) > 1:

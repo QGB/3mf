@@ -4,17 +4,17 @@ import math, os, cadquery as cq, bambu_slicer
 # ==========================================
 # 1. 基础参数与加工特征数据
 # ==========================================
-t = 5  # 厚度
+t = 0.3  # 厚度
 
 # 底面外轮廓坐标 (4个顶点，宽度死守 60mm：X 从 -30 到 30)
 out_shape = [(30.0, 33.8), (30.0, -50.2), (-30.0, -50.2), (-30.0, 33.8)]
 
 # 4 个【实际加工】的六边形螺母孔绝对坐标
 hex_centers = [
-    (-14.3, 9.4),   # 六边形 1 
-    (14.6, 9.0),     # 六边形 2
-    (-15.0, -25.0),  # 六边形 3
-    (15.0, -25),     # 六边形 4  
+    (-14.3+0.3, 9),   # 六边形 0 
+    (14.6-0.6, 9.0),     # 六边形 1
+    (-15.0, -25.0),  # 六边形 2
+    (15.0, -25),     # 六边形 3  
 ]
 
 # 螺母对边距离 11mm 精准换算外接圆直径
@@ -55,7 +55,7 @@ board = (
 )
 
 # 3.2 逐个切削六角形通孔
-for cq_hx, cq_hy in hex_centers:
+for n,(cq_hx, cq_hy) in enumerate(hex_centers):
     hex_cutter = (
         cq.Workplane("XY")
         .workplane(offset=t/2.0 + 1.0)      
@@ -64,17 +64,18 @@ for cq_hx, cq_hy in hex_centers:
         .extrude(-t - 2.0)                
     )
     board = board.cut(hex_cutter)
+    board, _smark = bambu_slicer.add_time_mark(board,smark=f'{n}',x=cq_hx-5,y=cq_hy+10,plane='bottom')
 
 # 3.3 参考其它代码做法：逐个独立切削大圆形盲孔，外凸拉伸，防止底面碎裂
-for cq_hx, cq_hy in hex_centers:
-    blind_cutter = (
-        cq.Workplane("XY")
-        .workplane(offset=-t/2.0 - 1.0)     # 从板底面往下多延展 1mm 处作为起点
-        .center(cq_hx, cq_hy)
-        .circle(blind_hole_dia / 2.0)
-        .extrude(blind_hole_depth + 1.0)   # 向上拉伸，刚好完美切过 1.5mm 盲孔深度
-    )
-    board = board.cut(blind_cutter)
+    if t>blind_hole_depth:
+        blind_cutter = (
+            cq.Workplane("XY")
+            .workplane(offset=-t/2.0 - 1.0)     # 从板底面往下多延展 1mm 处作为起点
+            .center(cq_hx, cq_hy)
+            .circle(blind_hole_dia / 2.0)
+            .extrude(blind_hole_depth + 1.0)   # 向上拉伸，刚好完美切过 1.5mm 盲孔深度
+        )
+        board = board.cut(blind_cutter)
 
 
 # ==========================================
@@ -100,24 +101,8 @@ preview_dots = (
 )
 
 
-def flip_model(solid, angle, axis='y'):
-    axis = axis.lower()
-    x_scale, y_scale = 1, 1
-    if axis == 'x':
-        vec = (1, 0, 0)
-        if angle % 360 == 180: y_scale = -1
-    elif axis == 'y':
-        vec = (0, 1, 0)
-        if angle % 360 == 180: x_scale = -1
-    else:
-        vec = (0, 0, 1)
-        if angle % 360 == 180: x_scale, y_scale = -1, -1
-            
-    rotated_solid = solid.rotate((0, 0, 0), vec, angle)
-    return rotated_solid, x_scale, y_scale
 
-board, x_scale, y_scale = flip_model(board, angle=180, axis='y')
-
+board, x_scale, y_scale = bambu_slicer.flip_model(board, angle=180, axis='y')
 # 执行跨模块标注，并同步解包更新本地的 board 与唯一的 smark
 board, smark = bambu_slicer.add_time_mark(board)
 
