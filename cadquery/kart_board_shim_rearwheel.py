@@ -4,17 +4,17 @@ import math, os, cadquery as cq, bambu_slicer
 # ==========================================
 # 1. 基础参数与加工特征数据
 # ==========================================
-t = 0.3  # 厚度
+t = 0.2  # 厚度
 
 # 底面外轮廓坐标 (4个顶点，宽度死守 60mm：X 从 -30 到 30)
 out_shape = [(30.0, 33.8), (30.0, -50.2), (-30.0, -50.2), (-30.0, 33.8)]
 
 # 4 个【实际加工】的六边形螺母孔绝对坐标
 hex_centers = [
-    (-14.3+0.3, 9),   # 六边形 0 
-    (14.6-0.6, 9.0),     # 六边形 1
-    (-15.0, -25.0),  # 六边形 2
-    (15.0, -25),     # 六边形 3  
+    (-15, 9.4),   # 六边形 0 
+    (15, 9.0),     # 六边形 1
+    (-15.0, -25.4),  # 六边形 2
+    (15.0, -25+1),     # 六边形 3  
 ]
 
 # 螺母对边距离 11mm 精准换算外接圆直径
@@ -64,7 +64,9 @@ for n,(cq_hx, cq_hy) in enumerate(hex_centers):
         .extrude(-t - 2.0)                
     )
     board = board.cut(hex_cutter)
-    board, _smark = bambu_slicer.add_time_mark(board,smark=f'{n}',x=cq_hx-5,y=cq_hy+10,plane='bottom')
+    board, _smark = bambu_slicer.add_time_mark(
+board,smark=f'{n}',x=cq_hx-5,y=cq_hy+10,
+plane='bottom',thickness=t,mark_depth=0.2+0.1*n)
 
 # 3.3 参考其它代码做法：逐个独立切削大圆形盲孔，外凸拉伸，防止底面碎裂
     if t>blind_hole_depth:
@@ -104,7 +106,8 @@ preview_dots = (
 
 board, x_scale, y_scale = bambu_slicer.flip_model(board, angle=180, axis='y')
 # 执行跨模块标注，并同步解包更新本地的 board 与唯一的 smark
-board, smark = bambu_slicer.add_time_mark(board)
+board, smark = bambu_slicer.add_time_mark(
+board,thickness=t,mark_depth=0.2,)
 
 if t>2:board = bambu_slicer.add_brim(board,12,0.4)#防止翘边，不要去除注释
 

@@ -160,31 +160,41 @@ def flip_model(solid, angle, axis='y'):
 
 # ==========================================
 # 2. 顶面时间标注函数（绝对单向传递 smark）
-def add_time_mark(obj,smark='',x=0,y=-7.5,plane='top'):
+def add_time_mark(obj, smark='', x=0, y=-7.5, plane='top', mode='auto', thickness=None, mark_depth=0.1):
     if not smark:
         smark = U.get_time_str_mark(sep=' ')
-    bbox = obj.val().BoundingBox()
-    current_t = bbox.zlen
-    if plane=='top':
-        offset=current_t / 2.0
-        distance=-0.1
-    if plane=='bottom':
-        offset=-current_t / 2.0
-        distance=0.1
-        
+    current_t = thickness if thickness is not None else obj.val().BoundingBox().zlen
+    mode_lower = str(mode).lower().strip()
+    if mode_lower == 'auto':
+        actual_mode = 'yin' if current_t >= 1.0 else 'yang'
+    elif mode_lower in ['yin', '阴', '凹', 'engrave', 'deboss', 'recessed']:
+        actual_mode = 'yin'
+    elif mode_lower in ['yang', '阳', '凸', 'emboss', 'raised']:
+        actual_mode = 'yang'
+    else:
+        actual_mode = 'yin' if current_t >= 1.0 else 'yang'
+    if plane == 'top':
+        offset = current_t / 2.0
+        distance = -mark_depth if actual_mode == 'yin' else mark_depth
+    elif plane == 'bottom':
+        offset = -current_t / 2.0
+        distance = mark_depth if actual_mode == 'yin' else -mark_depth
+    else:
+        raise ValueError("plane 参数只能是 'top' 或 'bottom'")
     text_cutter = (
         cq.Workplane("XY")
-        .workplane(offset=offset)                                
-        .center(x,y)  
+        .workplane(offset=offset)
+        .center(x, y)
         .text(smark, fontsize=8, distance=distance, font="Arial", halign="center", valign="center", combine=False)
     )
-    res_obj = obj.cut(text_cutter)
+    if actual_mode == 'yin':
+        res_obj = obj.cut(text_cutter)
+    else:
+        res_obj = obj.union(text_cutter)
     if len(res_obj.solids().vals()) > 1:
         res_obj = cq.Workplane(obj=max(res_obj.solids().vals(), key=lambda s: s.Volume()))
-        
-    return res_obj, smark  # <--- 同时吐出实体和时间戳，彻底解决跨模块修改失败问题
-
-
+    return res_obj, smark
+    
 def add_brim(obj, extend=10.0, thickness=0.4):
     """
     【任意异形完美适配版 - 修正版】
