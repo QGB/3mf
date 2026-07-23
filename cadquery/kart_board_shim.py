@@ -1,10 +1,10 @@
 import sys;'qgb.U' in sys.modules or sys.path.append('C:/QGB/Anaconda3/Lib/site-packages/Pythonwin/');from qgb import *
+import bambu_slicer
 import os
 import sys
 import json
 import math
 import cadquery as cq
-import bambu_slicer
 # ================== 1. 基础参数 ==================
 board_w = 100.0  
 board_h = 100.4  
