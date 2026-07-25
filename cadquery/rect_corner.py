@@ -77,7 +77,7 @@ cutout_center = (-7.5+1, yc, 0)
 cutter_notch = (
     cq.Workplane("XY")
     .transformed(offset=cutout_center)
-    .box(15, cut_w, 150)
+    .box(15+2+1, cut_w, 150)
 )
 box = box.cut(cutter_notch)
 # 计算缺口在 Y 轴上的下边界和上边界 (中心在 Y=40, 宽度 15mm)
@@ -99,7 +99,16 @@ wall_upper = (
     .transformed(offset=(-enclosure_len / 2.0, y_upper + wall / 2.0,-h/2+0.7))
     .box(enclosure_len, wall, h)
 )
-box = box.union(wall_lower).union(wall_upper)#.union(cross_wall)
+
+cross_wall = (
+    cq.Workplane("XY")
+    .transformed(offset=(-enclosure_len, (y_lower + y_upper)/2,b+0.1))
+    .box(wall, y_upper - y_lower+2,b)
+)
+# ======================================================
+
+# 合并上下竖墙 + 左端横墙
+box = box.union(wall_lower).union(wall_upper).union(cross_wall)
 # ------------------ 7. 可选：防翘边 ------------------
 box, x_scale, y_scale = bambu_slicer.flip_model(box, angle=180, axis='y')
 box = bambu_slicer.add_brim(box, 2)
