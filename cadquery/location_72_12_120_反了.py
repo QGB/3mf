@@ -41,20 +41,21 @@ box = base.union(front).union(right)
 
 # ------------------ 5. 切割缺口 ------------------
 yc=90
+enclosure_len = 15  # 延伸长度 10mm
+cut_w=15.4
 cutout_center = (-7.5+1, yc, 0)
 cutter_notch = (
     cq.Workplane("XY")
     .transformed(offset=cutout_center)
-    .box(15, 15, 150)
+    .box(cut_w, 15, 150)
 )
 box = box.cut(cutter_notch)
 
 # ------------------ 6. 新增：缺口上下两侧的包围墙 (长度 10mm) ------------------
-enclosure_len = 15.3  # 延伸长度 10mm
 
 # 计算缺口在 Y 轴上的下边界和上边界 (中心在 Y=40, 宽度 15mm)
-y_lower = yc - 15.0 / 2.0  # 32.5
-y_upper = yc + 15.0 / 2.0  # 47.5
+y_lower = yc - cut_w / 2.0  # 32.5
+y_upper = yc + cut_w / 2.0  # 47.5
 
 # 下侧包围墙（紧贴 Y=32.5 下方）
 wall_lower = (
