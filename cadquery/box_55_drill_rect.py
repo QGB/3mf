@@ -1,12 +1,11 @@
-import math
-import cadquery as cq
+import math,cadquery as cq
 
 # ==========================================
 # 1. 参数定义与初始化
 # ==========================================
 inner_length = 136  # 内腔长 (mm)
 inner_width  = 56   # 内腔宽 (mm)
-frame_height = 10   # 框架高度 H (mm)
+frame_height = 16   # 框架高度 H (mm)
 
 # 📐 角度参数 (斜边与水平面的夹角)
 bevel_angle  = 60   # 支持任意角度，例如 45, 60, 30 等
@@ -120,13 +119,15 @@ else:
 # ==========================================
 # 6. 导出与显示
 # ==========================================
-step_file = f"Triangle_Frame_{int(bevel_angle)}deg.step"
-print(f"\n[步骤 5] 导出文件: {step_file}")
+import os,bambu_slicer
+step_file = os.path.splitext(__file__)[0] + f"_open_box_{bevel_angle}.step"
 cq.exporters.export(final_solid, step_file)
-print("🎉 运行结束！可在 CAD 软件中验证 60° 斜面与钻孔。")
 
-# CQ-Editor 视图显示
-try:
-    show_object(final_solid, name=f"Frame_{bevel_angle}deg", options={"alpha": 0.85, "color": "teal"})
-except NameError:
-    pass
+if "show_object" in globals():
+    show_object(final_solid, name=step_file[:-5])
+
+f = bambu_slicer.to_gcode(
+    cq_object=final_solid,
+    name=step_file,
+    output_dir=r"D:\test\bambu-studio"
+)

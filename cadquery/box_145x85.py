@@ -7,9 +7,9 @@ import cadquery as cq
 
 # =========== 1. 尺寸与厚度独立控制参数 ===========
 # 内腔尺寸 (mm)
-inner_length = 145.0   # 内腔长（X方向）
-inner_width  = 85.0    # 内腔宽（Y方向）
-inner_height = 30.0    # 内腔高（Z方向）
+inner_length = 145+3   # 内腔长（X方向）
+inner_width  = 85+2   # 内腔宽（Y方向）
+inner_height = 25    # 内腔高（Z方向）
 
 # 厚度控制（可独立修改）
 wall_thickness   = 1.5  # 四周侧壁厚度 (mm)
