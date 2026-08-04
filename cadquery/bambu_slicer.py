@@ -6,15 +6,67 @@ import zipfile
 import tempfile
 import cadquery as cq
 
+import os,re
+import json
+import tempfile
+import subprocess
+import zipfile
+import shutil
+import cadquery as cq
+
 # ==================== 后台固定的默认环境配置 ====================
 DEFAULT_BAMBU_EXE = r"D:\Bambu Studio\bambu-studio.exe"
-DEFAULT_MACHINE_JSON =r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user\1154792620\machine\Elegoo Neptune 4 0.2 nozzle - 拷贝.json"
-DEFAULT_FILAMENT_JSON=r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user\1154792620\filament\66-55.json"
-DEFAULT_PROCESS_JSON =r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user\1154792620\process\填充44  skirt5.json"
-#__import__('ctypes').windll.user32.MessageBoxW(0, 'text', 'title', 0)
+DEFAULT_MACHINE_JSON = r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user\1154792620\machine\Elegoo Neptune 4 0.2 nozzle - 拷贝.json"
+DEFAULT_FILAMENT_JSON = r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user\1154792620\filament\66-55.json"
+DEFAULT_PROCESS_JSON = r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user\1154792620\process\填充44  skirt5.json"
 
-def _preprocess_dependent_json(src_path, safe_name, type_tag, model_token):
-    """内部函数：用于工艺和耗材配置文件的强行兼容性对齐"""
+# ==================== 材质参数预设库 ====================
+MATERIAL_PRESETS = {
+    "PLA": {
+        "filament_type": ["PLA"],
+        "nozzle_temperature": ["205"],
+        "nozzle_temperature_initial_layer": ["205"],
+        "hot_plate_temp": ["60"],
+        "hot_plate_temp_initial_layer": ["65"],
+        "fan_max_speed": ["100"],
+        "fan_min_speed": ["100"],
+        "close_fan_the_first_x_layers": ["1"]
+    },
+    "PETG": {
+        "filament_type": ["PETG"],
+        "nozzle_temperature": ["235"],
+        "nozzle_temperature_initial_layer": ["238"],
+        "hot_plate_temp": ["65"],
+        "hot_plate_temp_initial_layer": ["70"],
+        "fan_max_speed": ["50"],
+        "fan_min_speed": ["20"],
+        "close_fan_the_first_x_layers": ["3"]
+    },
+    "ABS": {
+        "filament_type": ["ABS"],
+        "nozzle_temperature": ["250"],
+        "nozzle_temperature_initial_layer": ["250"],
+        "hot_plate_temp": ["100"],
+        "hot_plate_temp_initial_layer": ["100"],
+        "fan_max_speed": ["30"],
+        "fan_min_speed": ["0"],
+        "close_fan_the_first_x_layers": ["5"]
+    },
+    "TPU": {
+        "filament_type": ["TPU"],
+        "nozzle_temperature": ["220"],
+        "nozzle_temperature_initial_layer": ["225"],
+        "hot_plate_temp": ["50"],
+        "hot_plate_temp_initial_layer": ["50"],
+        "fan_max_speed": ["100"],
+        "fan_min_speed": ["80"],
+        "close_fan_the_first_x_layers": ["1"]
+    }
+}
+
+
+def _preprocess_dependent_json(src_path, safe_name, type_tag, model_token, material_overrides=None):
+    """内部函数：用于工艺和耗材配置文件的强行兼容性对齐及参数覆写"""
     try:
         with open(src_path, 'r', encoding='utf-8-sig') as f:
             config_data = json.load(f)
@@ -26,20 +78,22 @@ def _preprocess_dependent_json(src_path, safe_name, type_tag, model_token):
         config_data.pop("compatible_prints_condition", None)
         config_data.pop("compatible_filaments_condition", None)
         
+        # 核心改动：注入材质覆盖参数
+        if material_overrides and isinstance(material_overrides, dict):
+            config_data.update(material_overrides)
+        
         tmp_dest = os.path.join(tempfile.gettempdir(), safe_name)
         with open(tmp_dest, 'w', encoding='utf-8') as f:
             json.dump(config_data, f, ensure_ascii=False, indent=4)
         return tmp_dest
     except Exception as e:
         print(f"[ERROR] 强制对齐配置失败 [{safe_name}]: {e}")
-        # sys.exit(1)
         raise e
 
 
-def to_gcode(cq_object, name="cq_model", output_dir=None,add_brim=0, layer_height="0.249mm", material="PLA", printer_name="Elegoo Neptune 4", print_time="17m34s"):
+def to_gcode(cq_object, name="cq_model", output_dir=None, add_brim=0, layer_height="0.249mm", material="PLA", printer_name="Elegoo Neptune 4", print_time="17m34s"):
     """
-    升级版封装：将 CadQuery 对象直接切片，防呆净化路径，成功则返回 G-code 绝对路径
-    #todo add_brim
+    升级版封装：将 CadQuery 对象直接切片，动态注入材质参数（如 PETG 喷嘴/热床温度），成功则返回 G-code 绝对路径
     """
     # 核心修复：自动提取纯文件名，并剔除可能随路径传入的扩展名
     clean_name = os.path.basename(name)
@@ -51,7 +105,12 @@ def to_gcode(cq_object, name="cq_model", output_dir=None,add_brim=0, layer_heigh
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    # 解析机型
+    # 1. 匹配材质预设参数
+    mat_key = material.strip().upper()
+    material_overrides = MATERIAL_PRESETS.get(mat_key, MATERIAL_PRESETS["PETG"])
+    print(f"[INFO] 正在应用材质配置: {mat_key} -> 喷嘴首层 {material_overrides['nozzle_temperature_initial_layer'][0]}℃, 热床首层 {material_overrides['hot_plate_temp_initial_layer'][0]}℃")
+
+    # 2. 解析机型
     print("[INFO] 正在解析机型配置文件并提取兼容性锚点...")
     try:
         with open(DEFAULT_MACHINE_JSON, 'r', encoding='utf-8-sig') as f:
@@ -69,27 +128,43 @@ def to_gcode(cq_object, name="cq_model", output_dir=None,add_brim=0, layer_heigh
         print(f"[ERROR] 提取机型锚点失败: {e}")
         return None
 
-    # 对齐工艺与耗材
-    print("[INFO] 正在对工艺和耗材配置文件执行强行兼容性对齐...")
+    # 3. 对齐工艺与耗材（将 PETG 参数动态注入耗材配置中）
+    print("[INFO] 正在对工艺和耗材配置文件执行强行兼容性对齐及材质参数注入...")
     safe_process = _preprocess_dependent_json(DEFAULT_PROCESS_JSON, "cli_process.json", "process", printer_model_token)
-    safe_filament = _preprocess_dependent_json(DEFAULT_FILAMENT_JSON, "cli_filament.json", "filament", printer_model_token)
+    safe_filament = _preprocess_dependent_json(
+        DEFAULT_FILAMENT_JSON, 
+        "cli_filament.json", 
+        "filament", 
+        printer_model_token,
+        material_overrides=material_overrides
+    )
     print("[INFO] 配置文件闭环清洗完毕，安全沙盒映射成功。")
 
-    # 使用净化后的安全名称建立临时中转路径
+    # 4. 使用净化后的安全名称建立临时中转路径
     temp_stl = os.path.join(tempfile.gettempdir(), f"bambu_cli_temp_{clean_name}.stl")
     temp_3mf = os.path.join(tempfile.gettempdir(), f"bambu_cli_temp_{clean_name}.3mf")
 
-    # 导出 STL
+    # 5. 导出 STL
     print("[STEP 1] 正在将 CadQuery 对象直接转换为高精度 STL 网格...")
     try:
-        shape_to_export = cq_object.val() if hasattr(cq_object, "val") else cq_object
-        cq.exporters.export(shape_to_export, temp_stl, tolerance=0.01)
+        # 判断是否为 build123d 对象，优先使用其原生 STL 导出
+        if hasattr(cq_object, "part"):#box.part.wrapped 在 build123d 中通常是一个 Compound，而 CadQuery 期望接收的是 Workplane、Shape 或者一个 Shapes 列表。直接传入 Compound 会触发参数解包错误。
+            # build123d 的 BuildPart 上下文对象 (with BuildPart() as box:)
+            from build123d import export_stl as b3d_export_stl
+            b3d_export_stl(cq_object.part, temp_stl, tolerance=0.01) # 不能用 cq.exporters.export(box.part.wrapped)
+        elif hasattr(cq_object, "val"):
+            # CadQuery Workplane 或 Assembly
+            shape_to_export = cq_object.val()
+            cq.exporters.export(shape_to_export, temp_stl, tolerance=0.01)
+        else:
+            # 兜底：尝试作为 CadQuery Shape 导出
+            cq.exporters.export(cq_object, temp_stl, tolerance=0.01)
+
         print("   -> [INFO] STL 内存网格转换成功！")
     except Exception as e:
-        print(f"[ERROR] CadQuery 导出 STL 失败: {e}")
+        print(f"[ERROR] 导出 STL 失败: {e}")
         return None
-
-    # 调用引擎切片
+    # 6. 调用拓竹引擎执行切片
     print("[STEP 2] 正在调用拓竹命令行引擎执行闭环切片...")
     composite_settings = f"{safe_machine};{safe_process}"
     cmd = [
@@ -112,7 +187,7 @@ def to_gcode(cq_object, name="cq_model", output_dir=None,add_brim=0, layer_heigh
         if os.path.exists(temp_stl): os.remove(temp_stl)
         return None
 
-    # 提取 G-code
+    # 7. 提取 G-code
     print("[STEP 3] 切片成功，正在从 3MF 数据包中解压并提取纯 G-code...")
     output_gcode_name = f"{clean_name}_{layer_height}_{material}_{printer_name}_{print_time}.gcode"
     final_gcode_path = os.path.join(output_dir, output_gcode_name)
@@ -124,9 +199,8 @@ def to_gcode(cq_object, name="cq_model", output_dir=None,add_brim=0, layer_heigh
                 if gcode_in_zip in zip_ref.namelist():
                     with zip_ref.open(gcode_in_zip) as source, open(final_gcode_path, 'wb') as target:
                         shutil.copyfileobj(source, target)
-                    print(f"\n[SUCCESS] 最终 G-code 已经安全写入目标文件夹：")
-                    print(f"路径: {final_gcode_path}")
-                    return final_gcode_path  # 核心改动：成功则直接返回生成的本地 G-code 绝对路径
+                    print(U.pformat(analyze_gcode(final_gcode_path)),'\n',f"路径 {final_gcode_path}",)
+                    return final_gcode_path
                 else:
                     print("[WARNING] 3mf 包内未发现 gcode 轨迹，请检查配置参数。")
                     return None
@@ -498,3 +572,118 @@ def upload_and_print(file_path, printer_ip="192.168.1.113", printer_port=7125, t
     except Exception as e:
         print(f"[ERROR] 网络请求或传输过程中发生异常: {e}")
         return None        
+        
+
+
+
+def analyze_gcode(gcode_path):
+    """
+    解析 G-code 文件，提取切片参数。当总层数大于 1 时自动输出最后一层的参数。
+    
+    返回字典 Key 说明:
+    - nozzle_temp   : 首层喷嘴温度 (℃)
+    - bed_temp      : 首层热床温度 (℃)
+    - layer_h       : 设定基础层高 (mm)
+    - line_w        : 首层线宽 (mm)
+    - total_layers  : 总层数
+    - first_z       : 首层 Z 高度 (mm)
+    
+    【仅当 total_layers > 1 时追加】:
+    - last_z        : 最后一层 Z 高度 (mm)
+    - last_noz_temp : 最后一层喷嘴温度 (℃)
+    - last_bed_temp : 最后一层热床温度 (℃)
+    - last_layer_h  : 最后一层层高 (mm)
+    - last_line_w   : 最后一层/顶层线宽 (mm)
+    """
+    if not os.path.exists(gcode_path):
+        print(f"[ERROR] 文件不存在: {gcode_path}")
+        return None
+
+    config = {}
+    layer_z_list = []
+    total_layers_cfg = 0
+
+    with open(gcode_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line_str = line.strip()
+
+            # 1. 提取总层数
+            if total_layers_cfg == 0:
+                m_tot = re.search(r"^;\s*total layer number:\s*(\d+)", line_str, re.IGNORECASE)
+                if m_tot:
+                    total_layers_cfg = int(m_tot.group(1))
+
+            # 2. 收集 Z 轴轨迹高度
+            m_z = re.search(r"^;\s*Z_HEIGHT:\s*([0-9.]+)", line_str, re.IGNORECASE)
+            if m_z:
+                layer_z_list.append(float(m_z.group(1)))
+
+            # 3. 提取最大 Z 高度
+            if "max_z" not in config:
+                m_max_z = re.search(r"^;\s*max_z_height:\s*([0-9.]+)", line_str, re.IGNORECASE)
+                if m_max_z:
+                    config["max_z"] = float(m_max_z.group(1))
+
+            # 4. 解析配置块参数
+            if line_str.startswith(";"):
+                # 首层与非首层喷嘴温度
+                if "noz_first" not in config and "nozzle_temperature_initial_layer" in line_str:
+                    m = re.search(r"nozzle_temperature_initial_layer\s*=\s*([0-9.]+)", line_str)
+                    if m: config["noz_first"] = float(m.group(1))
+
+                if "noz_other" not in config and re.search(r"^\s*;\s*nozzle_temperature\s*=\s*([0-9.]+)", line_str):
+                    m = re.search(r"nozzle_temperature\s*=\s*([0-9.]+)", line_str)
+                    if m: config["noz_other"] = float(m.group(1))
+
+                # 首层与非首层热床温度
+                if "bed_first" not in config and "hot_plate_temp_initial_layer" in line_str:
+                    m = re.search(r"hot_plate_temp_initial_layer\s*=\s*([0-9.]+)", line_str)
+                    if m: config["bed_first"] = float(m.group(1))
+
+                if "bed_other" not in config and re.search(r"^\s*;\s*hot_plate_temp\s*=\s*([0-9.]+)", line_str):
+                    m = re.search(r"hot_plate_temp\s*=\s*([0-9.]+)", line_str)
+                    if m: config["bed_other"] = float(m.group(1))
+
+                # 层高（首层与后续层）
+                if "h_first" not in config and "initial_layer_print_height" in line_str:
+                    m = re.search(r"initial_layer_print_height\s*=\s*([0-9.]+)", line_str)
+                    if m: config["h_first"] = float(m.group(1))
+
+                if "h_std" not in config and re.search(r"^\s*;\s*layer_height\s*=\s*([0-9.]+)", line_str):
+                    m = re.search(r"layer_height\s*=\s*([0-9.]+)", line_str)
+                    if m: config["h_std"] = float(m.group(1))
+
+                # 线宽（首层、普通层、顶层）
+                if "w_first" not in config and "initial_layer_line_width" in line_str:
+                    m = re.search(r"initial_layer_line_width\s*=\s*([0-9.]+)", line_str)
+                    if m: config["w_first"] = float(m.group(1))
+
+                if "w_top" not in config and "top_surface_line_width" in line_str:
+                    m = re.search(r"top_surface_line_width\s*=\s*([0-9.]+)", line_str)
+                    if m: config["w_top"] = float(m.group(1))
+
+                if "w_std" not in config and re.search(r"^\s*;\s*line_width\s*=\s*([0-9.]+)", line_str):
+                    m = re.search(r"line_width\s*=\s*([0-9.]+)", line_str)
+                    if m: config["w_std"] = float(m.group(1))
+
+    total_layers = total_layers_cfg or len(layer_z_list) or 0
+
+    # 构建基础字典
+    data = {
+        "nozzle_temp": config.get("noz_first") or config.get("noz_other"),
+        "bed_temp": config.get("bed_first") or config.get("bed_other"),
+        "layer_h": config.get("h_std") or config.get("h_first"),
+        "line_w": config.get("w_first") or config.get("w_std"),
+        "total_layers": total_layers,
+        "first_z": config.get("h_first") or (layer_z_list[0] if layer_z_list else None)
+    }
+
+    # 当层数大于 1 时追加最后一层信息
+    if total_layers > 1:
+        data["last_z"] = config.get("max_z") or (layer_z_list[-1] if layer_z_list else None)
+        data["last_noz_temp"] = config.get("noz_other") or data["nozzle_temp"]
+        data["last_bed_temp"] = config.get("bed_other") or data["bed_temp"]
+        data["last_layer_h"] = config.get("h_std") or data["layer_h"]
+        data["last_line_w"] = config.get("w_top") or config.get("w_std") or data["line_w"]
+
+    return data
