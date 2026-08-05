@@ -20,50 +20,48 @@ DEFAULT_MACHINE_JSON = r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user
 DEFAULT_FILAMENT_JSON = r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user\1154792620\filament\66-55.json"
 DEFAULT_PROCESS_JSON = r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user\1154792620\process\填充44  skirt5.json"
 
-# ==================== 材质参数预设库 ====================
-MATERIAL_PRESETS = {
+# ==================== 修正后的材质参数预设库 解决 M140 S35 问题  ====================
+MATERIAL_PRESETS_base = {  # TODO: ABS, TPU 只需增加条目
     "PLA": {
-        "filament_type": ["PLA"],
-        "nozzle_temperature": ["205"],
-        "nozzle_temperature_initial_layer": ["205"],
-        "hot_plate_temp": ["60"],
-        "hot_plate_temp_initial_layer": ["65"],
-        "fan_max_speed": ["100"],
-        "fan_min_speed": ["100"],
-        "close_fan_the_first_x_layers": ["1"]
+        "filament_type": "PLA",
+        "nozzle_temperature": 205,
+        "nozzle_temperature_initial_layer": 205,
+        "bed_temp": 60,
+        "bed_temp_initial_layer": 65,
+        "fan_max_speed": 100,
+        "fan_min_speed": 100,
+        "close_fan_the_first_x_layers": 1
     },
     "PETG": {
-        "filament_type": ["PETG"],
-        "nozzle_temperature": ["235"],
-        "nozzle_temperature_initial_layer": ["238"],
-        "hot_plate_temp": ["65"],
-        "hot_plate_temp_initial_layer": ["70"],
-        "fan_max_speed": ["50"],
-        "fan_min_speed": ["20"],
-        "close_fan_the_first_x_layers": ["3"]
-    },
-    "ABS": {
-        "filament_type": ["ABS"],
-        "nozzle_temperature": ["250"],
-        "nozzle_temperature_initial_layer": ["250"],
-        "hot_plate_temp": ["100"],
-        "hot_plate_temp_initial_layer": ["100"],
-        "fan_max_speed": ["30"],
-        "fan_min_speed": ["0"],
-        "close_fan_the_first_x_layers": ["5"]
-    },
-    "TPU": {
-        "filament_type": ["TPU"],
-        "nozzle_temperature": ["220"],
-        "nozzle_temperature_initial_layer": ["225"],
-        "hot_plate_temp": ["50"],
-        "hot_plate_temp_initial_layer": ["50"],
-        "fan_max_speed": ["100"],
-        "fan_min_speed": ["80"],
-        "close_fan_the_first_x_layers": ["1"]
+        "filament_type": "PETG",
+        "nozzle_temperature": 235,
+        "nozzle_temperature_initial_layer": 238,
+        "bed_temp": 65,
+        "bed_temp_initial_layer": 70,
+        "fan_max_speed": 50,
+        "fan_min_speed": 20,
+        "close_fan_the_first_x_layers": 3
     }
 }
-
+MATERIAL_PRESETS = {
+    mat: {
+        "filament_type": [c["filament_type"]],
+        "nozzle_temperature": [str(c["nozzle_temperature"])],
+        "nozzle_temperature_initial_layer": [str(c["nozzle_temperature_initial_layer"])],
+        "hot_plate_temp": [str(c["bed_temp"])],
+        "hot_plate_temp_initial_layer": [str(c["bed_temp_initial_layer"])],
+        "textured_plate_temp": [str(c["bed_temp"])],
+        "textured_plate_temp_initial_layer": [str(c["bed_temp_initial_layer"])],
+        "cool_plate_temp": [str(c["bed_temp"])],
+        "cool_plate_temp_initial_layer": [str(c["bed_temp_initial_layer"])],
+        "eng_plate_temp": [str(c["bed_temp"])],
+        "eng_plate_temp_initial_layer": [str(c["bed_temp_initial_layer"])],
+        "fan_max_speed": [str(c["fan_max_speed"])],
+        "fan_min_speed": [str(c["fan_min_speed"])],
+        "close_fan_the_first_x_layers": [str(c["close_fan_the_first_x_layers"])],
+    }
+    for mat, c in MATERIAL_PRESETS_base.items()
+}
 
 def _preprocess_dependent_json(src_path, safe_name, type_tag, model_token, material_overrides=None):
     """内部函数：用于工艺和耗材配置文件的强行兼容性对齐及参数覆写"""
@@ -464,19 +462,14 @@ def super_feature_detector(obj, feature_type="circle", target_size=None):
         
         
         
-        
-
-
-        
-        
-import time,requests
-from urllib.parse import quote
-
 
 def ensure_z_offset(target_z=-2.4, printer_ip="192.168.1.113", printer_port=7125):
     """
     确保打印机的 Z 轴偏移值达到目标精度，不满足则动态调整
     """
+    import time,requests
+    from urllib.parse import quote
+
     base_url = f"http://{printer_ip}:{printer_port}"
     status_url = f"{base_url}/printer/objects/query?toolhead&gcode_move"
     
@@ -578,22 +571,9 @@ def upload_and_print(file_path, printer_ip="192.168.1.113", printer_port=7125, t
 
 def analyze_gcode(gcode_path):
     """
-    解析 G-code 文件，提取切片参数。当总层数大于 1 时自动输出最后一层的参数。
-    
-    返回字典 Key 说明:
-    - nozzle_temp   : 首层喷嘴温度 (℃)
-    - bed_temp      : 首层热床温度 (℃)
-    - layer_h       : 设定基础层高 (mm)
-    - line_w        : 首层线宽 (mm)
-    - total_layers  : 总层数
-    - first_z       : 首层 Z 高度 (mm)
-    
-    【仅当 total_layers > 1 时追加】:
-    - last_z        : 最后一层 Z 高度 (mm)
-    - last_noz_temp : 最后一层喷嘴温度 (℃)
-    - last_bed_temp : 最后一层热床温度 (℃)
-    - last_layer_h  : 最后一层层高 (mm)
-    - last_line_w   : 最后一层/顶层线宽 (mm)
+    解析 G-code 文件，提取切片参数。
+    返回一个列表，包含首层和（当层数>1时）最后一层的参数字典。
+    每个字典的 key 完全相同，通过 layer_type ('first'/'last') 区分。
     """
     if not os.path.exists(gcode_path):
         print(f"[ERROR] 文件不存在: {gcode_path}")
@@ -607,83 +587,86 @@ def analyze_gcode(gcode_path):
         for line in f:
             line_str = line.strip()
 
-            # 1. 提取总层数
+            # 总层数
             if total_layers_cfg == 0:
                 m_tot = re.search(r"^;\s*total layer number:\s*(\d+)", line_str, re.IGNORECASE)
                 if m_tot:
                     total_layers_cfg = int(m_tot.group(1))
 
-            # 2. 收集 Z 轴轨迹高度
+            # 收集 Z_HEIGHT
             m_z = re.search(r"^;\s*Z_HEIGHT:\s*([0-9.]+)", line_str, re.IGNORECASE)
             if m_z:
                 layer_z_list.append(float(m_z.group(1)))
 
-            # 3. 提取最大 Z 高度
+            # 最大 Z 高度
             if "max_z" not in config:
                 m_max_z = re.search(r"^;\s*max_z_height:\s*([0-9.]+)", line_str, re.IGNORECASE)
                 if m_max_z:
                     config["max_z"] = float(m_max_z.group(1))
 
-            # 4. 解析配置块参数
+            # 参数提取（注释行）
             if line_str.startswith(";"):
-                # 首层与非首层喷嘴温度
+                # 喷嘴温度
                 if "noz_first" not in config and "nozzle_temperature_initial_layer" in line_str:
                     m = re.search(r"nozzle_temperature_initial_layer\s*=\s*([0-9.]+)", line_str)
                     if m: config["noz_first"] = float(m.group(1))
-
                 if "noz_other" not in config and re.search(r"^\s*;\s*nozzle_temperature\s*=\s*([0-9.]+)", line_str):
                     m = re.search(r"nozzle_temperature\s*=\s*([0-9.]+)", line_str)
                     if m: config["noz_other"] = float(m.group(1))
 
-                # 首层与非首层热床温度
+                # 热床温度
                 if "bed_first" not in config and "hot_plate_temp_initial_layer" in line_str:
                     m = re.search(r"hot_plate_temp_initial_layer\s*=\s*([0-9.]+)", line_str)
                     if m: config["bed_first"] = float(m.group(1))
-
                 if "bed_other" not in config and re.search(r"^\s*;\s*hot_plate_temp\s*=\s*([0-9.]+)", line_str):
                     m = re.search(r"hot_plate_temp\s*=\s*([0-9.]+)", line_str)
                     if m: config["bed_other"] = float(m.group(1))
 
-                # 层高（首层与后续层）
+                # 层高
                 if "h_first" not in config and "initial_layer_print_height" in line_str:
                     m = re.search(r"initial_layer_print_height\s*=\s*([0-9.]+)", line_str)
                     if m: config["h_first"] = float(m.group(1))
-
                 if "h_std" not in config and re.search(r"^\s*;\s*layer_height\s*=\s*([0-9.]+)", line_str):
                     m = re.search(r"layer_height\s*=\s*([0-9.]+)", line_str)
                     if m: config["h_std"] = float(m.group(1))
 
-                # 线宽（首层、普通层、顶层）
+                # 线宽
                 if "w_first" not in config and "initial_layer_line_width" in line_str:
                     m = re.search(r"initial_layer_line_width\s*=\s*([0-9.]+)", line_str)
                     if m: config["w_first"] = float(m.group(1))
-
                 if "w_top" not in config and "top_surface_line_width" in line_str:
                     m = re.search(r"top_surface_line_width\s*=\s*([0-9.]+)", line_str)
                     if m: config["w_top"] = float(m.group(1))
-
                 if "w_std" not in config and re.search(r"^\s*;\s*line_width\s*=\s*([0-9.]+)", line_str):
                     m = re.search(r"line_width\s*=\s*([0-9.]+)", line_str)
                     if m: config["w_std"] = float(m.group(1))
 
     total_layers = total_layers_cfg or len(layer_z_list) or 0
 
-    # 构建基础字典
-    data = {
+    # 构建首层字典
+    first_layer = {
+        "layer_type": "first",
         "nozzle_temp": config.get("noz_first") or config.get("noz_other"),
         "bed_temp": config.get("bed_first") or config.get("bed_other"),
-        "layer_h": config.get("h_std") or config.get("h_first"),
+        "layer_h": config.get("h_first") or config.get("h_std"),
         "line_w": config.get("w_first") or config.get("w_std"),
-        "total_layers": total_layers,
-        "first_z": config.get("h_first") or (layer_z_list[0] if layer_z_list else None)
+        "z": config.get("h_first") or (layer_z_list[0] if layer_z_list else None),
+        "total_layers": total_layers
     }
 
-    # 当层数大于 1 时追加最后一层信息
-    if total_layers > 1:
-        data["last_z"] = config.get("max_z") or (layer_z_list[-1] if layer_z_list else None)
-        data["last_noz_temp"] = config.get("noz_other") or data["nozzle_temp"]
-        data["last_bed_temp"] = config.get("bed_other") or data["bed_temp"]
-        data["last_layer_h"] = config.get("h_std") or data["layer_h"]
-        data["last_line_w"] = config.get("w_top") or config.get("w_std") or data["line_w"]
+    # 只有一层时，直接返回首层
+    if total_layers <= 1:
+        return [first_layer]
 
-    return data
+    # 构建末层字典
+    last_layer = {
+        "layer_type": "last",
+        "nozzle_temp": config.get("noz_other") or first_layer["nozzle_temp"],
+        "bed_temp": config.get("bed_other") or first_layer["bed_temp"],
+        "layer_h": config.get("h_std") or first_layer["layer_h"],
+        "line_w": config.get("w_top") or config.get("w_std") or first_layer["line_w"],
+        "z": config.get("max_z") or (layer_z_list[-1] if layer_z_list else None),
+        "total_layers": total_layers
+    }
+
+    return [first_layer, last_layer]
