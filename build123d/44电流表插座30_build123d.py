@@ -1,5 +1,4 @@
-import os
-import math
+import os,math
 import cadquery as cq
 import build123d_fix
 from build123d import *
@@ -14,8 +13,8 @@ inner_L2 = 30.0          # 右侧内腔长度 (X方向, mm)
 inner_W2 = 55.5          # 右侧内腔高度 (Y方向, mm)
 
 # -- 外壳与厚度参数 --
-wall_thick = 3.0         # 盒子外沿壁厚 (mm) - 向外等距拓展
-inner_height = 30.0      # 内腔深度/拉伸高度 (mm)
+wall_thick = 2         # 盒子外沿壁厚 (mm) - 向外等距拓展
+inner_height = 39      # 内腔深度/拉伸高度 (mm)
 base_thickness = 0.0     # 底板厚度 (mm) - 设为0即为通孔框架，>0即为带底盒
 box_height = inner_height + base_thickness
 
@@ -193,6 +192,7 @@ with BuildPart() as box:
             with Locations(*pts):
                 Hole(radius=drill_diameter / 2, depth=box_height + 5)
 
+    # 左侧内腔底面生成 2mm宽、1mm 厚的内部筋条
     with BuildSketch(Plane.XY.offset(base_thickness)):
         with Locations((x_left, 0.0)):
             Rectangle(2, inner_W1)
