@@ -25,4 +25,5 @@ f = bambu_slicer.to_gcode(
     name=step_file,
     output_dir=r"D:\test\bambu-studio",
     material='PETG',
+    layer_height=0.39,
 )

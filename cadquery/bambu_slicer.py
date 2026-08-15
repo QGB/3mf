@@ -1,19 +1,10 @@
 import sys;'qgb.U' in sys.modules or sys.path.append('C:/QGB/Anaconda3/Lib/site-packages/Pythonwin/')
 import sys;'qgb.U' in sys.modules or sys.path.append('C:/QGB/miniforge3/Lib/site-packages/pythonwin/');from qgb import *
-import os,sys,json,shutil
+import os,sys,json,shutil,re
 import subprocess
 import zipfile
 import tempfile
 import cadquery as cq
-
-import os,re
-import json
-import tempfile
-import subprocess
-import zipfile
-import shutil
-import cadquery as cq
-
 # ==================== 后台固定的默认环境配置 ====================
 DEFAULT_BAMBU_EXE = r"D:\Bambu Studio\bambu-studio.exe"
 DEFAULT_MACHINE_JSON = r"C:\Users\Administrator\AppData\Roaming\BambuStudio\user\1154792620\machine\Elegoo Neptune 4 0.2 nozzle - 拷贝.json"
@@ -63,8 +54,20 @@ MATERIAL_PRESETS = {
     for mat, c in MATERIAL_PRESETS_base.items()
 }
 
-def _preprocess_dependent_json(src_path, safe_name, type_tag, model_token, material_overrides=None):
-    """内部函数：用于工艺和耗材配置文件的强行兼容性对齐及参数覆写"""
+MATERIAL_PRESETS = {
+    mat: {
+        **{k: [str(v)] for k, v in c.items() if k not in ["bed_temp","bed_temp_initial_layer"]},
+        **{k: [str(c["bed_temp"])] for k in ("hot_plate_temp", "textured_plate_temp", "cool_plate_temp", "eng_plate_temp")},
+        **{k: [str(c["bed_temp_initial_layer"])] for k in ("hot_plate_temp_initial_layer", "textured_plate_temp_initial_layer", "cool_plate_temp_initial_layer", "eng_plate_temp_initial_layer")}
+    }
+    for mat, c in MATERIAL_PRESETS_base.items()
+}
+
+
+
+
+def _preprocess_dependent_json(src_path, safe_name, type_tag, model_token, overrides=None):
+    """内部函数：用于工艺和耗材配置文件的强行兼容性对齐及参数覆写（升级通用覆写逻辑）"""
     try:
         with open(src_path, 'r', encoding='utf-8-sig') as f:
             config_data = json.load(f)
@@ -76,9 +79,14 @@ def _preprocess_dependent_json(src_path, safe_name, type_tag, model_token, mater
         config_data.pop("compatible_prints_condition", None)
         config_data.pop("compatible_filaments_condition", None)
         
-        # 核心改动：注入材质覆盖参数
-        if material_overrides and isinstance(material_overrides, dict):
-            config_data.update(material_overrides)
+        # 核心改动：注入通用覆盖参数（自动适配原配置文件中的 列表/单值 结构）
+        if overrides and isinstance(overrides, dict):
+            for key, val in overrides.items():
+                # 判断配置文件中原有的数据类型
+                if key in config_data and isinstance(config_data[key], list):
+                    config_data[key] = [str(x) for x in val] if isinstance(val, list) else [str(val)]
+                else:
+                    config_data[key] = str(val[0]) if isinstance(val, list) else str(val)
         
         tmp_dest = os.path.join(tempfile.gettempdir(), safe_name)
         with open(tmp_dest, 'w', encoding='utf-8') as f:
@@ -88,12 +96,14 @@ def _preprocess_dependent_json(src_path, safe_name, type_tag, model_token, mater
         print(f"[ERROR] 强制对齐配置失败 [{safe_name}]: {e}")
         raise e
 
-
-def to_gcode(cq_object, name="cq_model", output_dir=None, add_brim=0, layer_height="0.249mm", material="PLA", printer_name="Elegoo Neptune 4", print_time="17m34s"):
+def to_gcode(cq_object,name="cq_model", output_dir=None, layer_height="0.3mm", material="PLA", printer_name="Elegoo Neptune 4",add_brim=0):
     """
-    升级版封装：将 CadQuery 对象直接切片，动态注入材质参数（如 PETG 喷嘴/热床温度），成功则返回 G-code 绝对路径
+    封装切片流程：转换模型、调用拓竹引擎切片、解压 G-code 并自动分析日志与打印时间
     """
-    # 核心修复：自动提取纯文件名，并剔除可能随路径传入的扩展名
+    # 1. 解析层高
+    lh_str = f"{float(m.group()):g}" if (m := re.search(r"\d+\.?\d*", str(layer_height))) else "0.2"
+    
+    # 2. 自动提取纯文件名
     clean_name = os.path.basename(name)
     if clean_name.lower().endswith(('.step', '.solid', '.stl', '.py')):
         clean_name = os.path.splitext(clean_name)[0]
@@ -103,21 +113,31 @@ def to_gcode(cq_object, name="cq_model", output_dir=None, add_brim=0, layer_heig
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    # 1. 匹配材质预设参数
+    # 3. 匹配材质预设参数
     mat_key = material.strip().upper()
     material_overrides = MATERIAL_PRESETS.get(mat_key, MATERIAL_PRESETS["PETG"])
     print(f"[INFO] 正在应用材质配置: {mat_key} -> 喷嘴首层 {material_overrides['nozzle_temperature_initial_layer'][0]}℃, 热床首层 {material_overrides['hot_plate_temp_initial_layer'][0]}℃")
 
-    # 2. 解析机型
-    print("[INFO] 正在解析机型配置文件并提取兼容性锚点...")
+    # 4. 解析机型并修正软控起步温度
+
     try:
         with open(DEFAULT_MACHINE_JSON, 'r', encoding='utf-8-sig') as f:
             machine_data = json.load(f)
+        print(f"[INFO] printer_model = {machine_data.get('printer_model')!r}")
+        print(f"[INFO] inherits = {machine_data.get('inherits')!r}")
+        print(f"[INFO] printable_area = {machine_data.get('printable_area')!r}")
+        print(f"[INFO] bed_exclude_area = {machine_data.get('bed_exclude_area')!r}")
         
         printer_model_token = machine_data.get("printer_model") or machine_data.get("inherits") or "Elegoo Neptune 4 0.2 nozzle"
         machine_data["printer_model"] = printer_model_token
         machine_data["type"] = "machine"
         
+        if "machine_start_gcode" in machine_data:
+            start_gcode = machine_data["machine_start_gcode"]
+            start_gcode = re.sub(r'M140\s+S\d+', 'M140 S[bed_temperature_initial_layer_single]', start_gcode)
+            start_gcode = re.sub(r'M104\s+S\d+', 'M104 S[nozzle_temperature_initial_layer]', start_gcode)
+            machine_data["machine_start_gcode"] = start_gcode
+
         safe_machine = os.path.join(tempfile.gettempdir(), "cli_machine.json")
         with open(safe_machine, 'w', encoding='utf-8') as f:
             json.dump(machine_data, f, ensure_ascii=False, indent=4)
@@ -126,43 +146,47 @@ def to_gcode(cq_object, name="cq_model", output_dir=None, add_brim=0, layer_heig
         print(f"[ERROR] 提取机型锚点失败: {e}")
         return None
 
-    # 3. 对齐工艺与耗材（将 PETG 参数动态注入耗材配置中）
-    print("[INFO] 正在对工艺和耗材配置文件执行强行兼容性对齐及材质参数注入...")
-    safe_process = _preprocess_dependent_json(DEFAULT_PROCESS_JSON, "cli_process.json", "process", printer_model_token)
+    # 5. 对齐工艺与耗材
+    print("[INFO] 正在对工艺和耗材配置文件执行强行兼容性对齐及层高/材质参数注入...")
+    process_overrides = {"layer_height": lh_str}
+    
+    safe_process = _preprocess_dependent_json(
+        DEFAULT_PROCESS_JSON, 
+        "cli_process.json", 
+        "process", 
+        printer_model_token,
+        overrides=process_overrides
+    )
     safe_filament = _preprocess_dependent_json(
         DEFAULT_FILAMENT_JSON, 
         "cli_filament.json", 
         "filament", 
         printer_model_token,
-        material_overrides=material_overrides
+        overrides=material_overrides
     )
     print("[INFO] 配置文件闭环清洗完毕，安全沙盒映射成功。")
 
-    # 4. 使用净化后的安全名称建立临时中转路径
+    # 6. 中转路径与 STL 导出
     temp_stl = os.path.join(tempfile.gettempdir(), f"bambu_cli_temp_{clean_name}.stl")
     temp_3mf = os.path.join(tempfile.gettempdir(), f"bambu_cli_temp_{clean_name}.3mf")
 
-    # 5. 导出 STL
-    print("[STEP 1] 正在将 CadQuery 对象直接转换为高精度 STL 网格...")
+    print("[STEP 1] 正在将 CadQuery/build123d 对象直接转换为高精度 STL 网格...")
     try:
-        # 判断是否为 build123d 对象，优先使用其原生 STL 导出
-        if hasattr(cq_object, "part"):#box.part.wrapped 在 build123d 中通常是一个 Compound，而 CadQuery 期望接收的是 Workplane、Shape 或者一个 Shapes 列表。直接传入 Compound 会触发参数解包错误。
-            # build123d 的 BuildPart 上下文对象 (with BuildPart() as box:)
+        if hasattr(cq_object, "part"):
             from build123d import export_stl as b3d_export_stl
-            b3d_export_stl(cq_object.part, temp_stl, tolerance=0.01) # 不能用 cq.exporters.export(box.part.wrapped)
+            b3d_export_stl(cq_object.part, temp_stl, tolerance=0.01)
         elif hasattr(cq_object, "val"):
-            # CadQuery Workplane 或 Assembly
             shape_to_export = cq_object.val()
             cq.exporters.export(shape_to_export, temp_stl, tolerance=0.01)
         else:
-            # 兜底：尝试作为 CadQuery Shape 导出
             cq.exporters.export(cq_object, temp_stl, tolerance=0.01)
 
         print("   -> [INFO] STL 内存网格转换成功！")
     except Exception as e:
         print(f"[ERROR] 导出 STL 失败: {e}")
         return None
-    # 6. 调用拓竹引擎执行切片
+
+    # 7. 调用拓竹切片引擎
     print("[STEP 2] 正在调用拓竹命令行引擎执行闭环切片...")
     composite_settings = f"{safe_machine};{safe_process}"
     cmd = [
@@ -185,19 +209,29 @@ def to_gcode(cq_object, name="cq_model", output_dir=None, add_brim=0, layer_heig
         if os.path.exists(temp_stl): os.remove(temp_stl)
         return None
 
-    # 7. 提取 G-code
+    # 8. 提取 G-code 并自动解析分析参数
     print("[STEP 3] 切片成功，正在从 3MF 数据包中解压并提取纯 G-code...")
-    output_gcode_name = f"{clean_name}_{layer_height}_{material}_{printer_name}_{print_time}.gcode"
-    final_gcode_path = os.path.join(output_dir, output_gcode_name)
+    temp_extracted_gcode = os.path.join(tempfile.gettempdir(), f"temp_{clean_name}.gcode")
 
     if os.path.exists(temp_3mf):
         try:
             with zipfile.ZipFile(temp_3mf, 'r') as zip_ref:
                 gcode_in_zip = "Metadata/plate_1.gcode"
                 if gcode_in_zip in zip_ref.namelist():
-                    with zip_ref.open(gcode_in_zip) as source, open(final_gcode_path, 'wb') as target:
+                    with zip_ref.open(gcode_in_zip) as source, open(temp_extracted_gcode, 'wb') as target:
                         shutil.copyfileobj(source, target)
-                    print(U.pformat(analyze_gcode(final_gcode_path)),'\n',f"路径 {final_gcode_path}",)
+
+                    # 分析临时 G-code，提取打印时间与格式化参数字符串
+                    gcode_info = analyze_gcode(temp_extracted_gcode) #analyze_gcode 已经定义，不用生成这个函数
+                    print_time = gcode_info["print_time"]# 出错直接退出，因为不应该出错
+
+                    # 重命名保存至最终输出路径
+                    output_gcode_name = f"{clean_name}_{lh_str}mm_{material}_{printer_name}_{print_time}.gcode"
+                    final_gcode_path = os.path.join(output_dir, output_gcode_name)
+                    shutil.move(temp_extracted_gcode, final_gcode_path)
+
+                    # 输出分析结果与路径
+                    print(gcode_info["print_str"], '\n', f"路径 {final_gcode_path}")
                     return final_gcode_path
                 else:
                     print("[WARNING] 3mf 包内未发现 gcode 轨迹，请检查配置参数。")
@@ -209,12 +243,25 @@ def to_gcode(cq_object, name="cq_model", output_dir=None, add_brim=0, layer_heig
             print("[STEP 4] 正在清理临时中转文件...")
             if os.path.exists(temp_stl): os.remove(temp_stl)
             if os.path.exists(temp_3mf): os.remove(temp_3mf)
+            if os.path.exists(temp_extracted_gcode): os.remove(temp_extracted_gcode)
             print("   -> [INFO] 清理完毕。")
     else:
         print("[ERROR] 未找到生成的临时 3mf 文件。")
-        return None
+        return None 
+        
 ########################
 
+def import_stl_ocp(file_path: str) -> cq.Shape:
+    ''' STL 导入出来是 Shell，不能做 union/cut/fuse 布尔运算，CadQuery/OCCT 布尔操作只支持 Solid。 '''
+    from OCP.StlAPI import StlAPI_Reader
+    from OCP.TopoDS import TopoDS_Shape
+    # import cadquery as cq
+    ocp_shape = TopoDS_Shape()
+    reader = StlAPI_Reader()
+    reader.Read(ocp_shape, file_path)
+    return cq.Shape(ocp_shape)
+import_stl=cadquery_import_stl=import_stl_ocp
+    
 def flip_model(solid, angle, axis='y'):
     axis = axis.lower()
     x_scale, y_scale = 1, 1
@@ -267,49 +314,136 @@ def add_time_mark(obj, smark='', x=0, y=-7.5, plane='top', mode='auto', thicknes
     if len(res_obj.solids().vals()) > 1:
         res_obj = cq.Workplane(obj=max(res_obj.solids().vals(), key=lambda s: s.Volume()))
     return res_obj, smark
-    
-def add_brim(obj, extend=10.0, thickness=0.4):
-    """
-    【任意异形完美适配版 - 修正版】
-    """
-    bbox = obj.val().BoundingBox()
-    zmin = bbox.zmin
-    
-    # 1. 提取最底部的面 Workplane
-    bottom_faces = obj.faces("<Z")
-    
-    # 2. 【修正关键】：使用 .val() 获取真实的 Face 对象，再提取最外圈外轮廓
-    outer_wire = bottom_faces.val().outerWire()
-    
-    try:
-        # 3. 绘制外扩后的实体
-        outer_solid = (
-            cq.Workplane("XY", origin=(0, 0, zmin))
-            .add(outer_wire)
-            .toPending()
-            .offset2D(extend, kind="arc") 
-            .extrude(thickness)
-        )
-        
-        # 4. 绘制未外扩的原始实体
-        inner_solid = (
-            cq.Workplane("XY", origin=(0, 0, zmin))
-            .add(outer_wire)
-            .toPending()
-            .extrude(thickness)
-        )
-        
-        # 5. 外大圈 减去 内小圈 = 得到紧贴外沿的中空裙边
-        brim_frame = outer_solid.cut(inner_solid)
-        
-        # 6. 和原模型求并集
-        return obj.union(brim_frame)
-        
-    except Exception as e:
-        print(f"[Brim Warning] 异形轮廓放大失败 ({e})，自动降级为包围盒标准矩形裙边！")
-        # 如果报错，在此处调用你之前基于 BoundingBox 写的绝对稳定的标准矩形裙边函数作兜底
-        return add_brim_bounding_box(obj, extend, thickness)
+#
 
+import cadquery as cq
+import traceback
+
+def add_brim(obj, extend=5.0, thickness=0.4, overlap=0.5):
+    """
+    【终极调试与破局版：彻底放弃 Union 融合，改用 Compound 组合】
+    包含详细打印日志，方便定位任何几何计算异常。
+    """
+    print("\n" + "="*60)
+    print("🛠️ [Brim Debug] 开始执行异形裙边生成逻辑...")
+    print("="*60)
+    
+    # ==========================================
+    # 1. 智能类型转换机制
+    # ==========================================
+    is_shape_input = isinstance(obj, cq.Shape)
+    if is_shape_input:
+        wp = cq.Workplane("XY").add(obj)
+        base_shape = obj
+    elif isinstance(obj, cq.Workplane):
+        wp = obj
+        base_shape = obj.val()
+    else:
+        try:
+            base_shape = cq.Shape(obj.wrapped)
+            wp = cq.Workplane("XY").add(base_shape)
+            is_shape_input = True 
+        except Exception:
+            print("❌ [Brim Debug] 无法识别输入对象类型！")
+            return obj
+
+    print(f"✅ [Brim Debug] 步骤1: 原始模型解析成功，体积: {base_shape.Volume():.2f} mm³")
+
+    try:
+        # ==========================================
+        # 2. 提取最外圈轮廓
+        # ==========================================
+        bbox = base_shape.BoundingBox()
+        zmin = bbox.zmin
+        print(f"📊 [Brim Debug] 步骤2: 包围盒 Zmin 基准 = {zmin:.3f} mm")
+
+        # 获取所有指向底部的面
+        bottom_faces = wp.faces("<Z").vals()
+        print(f"🔎 [Brim Debug] 步骤2: 共提取到 {len(bottom_faces)} 个底部平面")
+        
+        if len(bottom_faces) == 0:
+            raise ValueError("未找到任何底部平面！")
+
+        # 防御性编程：如果底面有多个（比如倒角导致的碎面），取面积最大的那个
+        largest_face = max(bottom_faces, key=lambda f: f.Area())
+        outer_wire = largest_face.outerWire()
+        print(f"✅ [Brim Debug] 步骤2: 成功提取最大底面的最外圈轮廓 (Wire)")
+
+        # ==========================================
+        # 3. 构造 3D 重叠裙边
+        # ==========================================
+        print(f"⚙️ [Brim Debug] 步骤3: 正在向外扩展 {extend}mm, 向内咬合 {overlap}mm...")
+        
+        outer_solid_wp = (
+            cq.Workplane("XY", origin=(0, 0, zmin))
+            .add(outer_wire)
+            .toPending()
+            .offset2D(extend, kind="arc")
+            .extrude(thickness)
+        )
+        print(f"✅ [Brim Debug] 步骤3: 外圈拉伸成功，体积: {outer_solid_wp.val().Volume():.2f} mm³")
+
+        inner_solid_wp = (
+            cq.Workplane("XY", origin=(0, 0, zmin))
+            .add(outer_wire)
+            .toPending()
+            .offset2D(-overlap, kind="arc") 
+            .extrude(thickness)
+        )
+        print(f"✅ [Brim Debug] 步骤3: 内圈(掏空基准)拉伸成功，体积: {inner_solid_wp.val().Volume():.2f} mm³")
+
+        brim_frame = outer_solid_wp.cut(inner_solid_wp)
+        brim_shape = brim_frame.val()
+        print(f"✅ [Brim Debug] 步骤3: 布尔切割(外-内)成功！生成的裙边体积: {brim_shape.Volume():.2f} mm³")
+
+        # ==========================================
+        # 4. 破局核心：使用 Compound (组合) 替代 Union (融合)
+        # ==========================================
+        print(f"🔗 [Brim Debug] 步骤4: 绕过底层 Union 拓扑漏洞，将两者打包为 Compound...")
+        
+        # 将原始模型和生成的裙边强行“放进同一个组”中，不做网格和面的合并
+        compound_shape = cq.Compound.makeCompound([base_shape, brim_shape])
+        
+        print(f"🎉 [Brim Debug] 步骤4: Compound 打包成功！总组合体积: {compound_shape.Volume():.2f} mm³")
+        print("="*60 + "\n")
+        
+        # 恢复输出类型
+        return compound_shape if is_shape_input else cq.Workplane("XY").add(compound_shape)
+
+    except Exception as e:
+        # ==========================================
+        # 5. 详细的报错捕获与降级
+        # ==========================================
+        print(f"❌ [Brim Debug] 发生异常: {str(e)}")
+        traceback.print_exc()  # 打印完整堆栈，方便你我定位到底错在哪一行
+        print(f"⚠️ [Brim Debug] 已触发降级机制：退回使用 BoundingBox 矩形裙边...")
+        print("="*60 + "\n")
+        return add_brim_bounding_box(obj, extend, thickness, base_shape)
+
+
+def add_brim_bounding_box(obj, extend, thickness, base_shape):
+    """【绝对安全兜底版】基于 BoundingBox 生成标准矩形外接裙边，同样使用 Compound"""
+    bbox = base_shape.BoundingBox()
+    zmin = bbox.zmin
+
+    rect_w = (bbox.xmax - bbox.xmin) + 2 * extend
+    rect_h = (bbox.ymax - bbox.ymin) + 2 * extend
+    cx = (bbox.xmin + bbox.xmax) / 2.0
+    cy = (bbox.ymin + bbox.ymax) / 2.0
+
+    brim_plate = (
+        cq.Workplane("XY", origin=(cx, cy, zmin))
+        .rect(rect_w, rect_h)
+        .extrude(thickness)
+    )
+
+    # 兜底函数同样不再使用 union，使用组合
+    compound_shape = cq.Compound.makeCompound([base_shape, brim_plate.val()])
+    return compound_shape if isinstance(obj, cq.Shape) else cq.Workplane("XY").add(compound_shape)
+
+
+
+    
 
 def get_bottom_outer_contour_points(obj):
     """
@@ -568,12 +702,10 @@ def upload_and_print(file_path, printer_ip="192.168.1.113", printer_port=7125, t
         
 
 
-
 def analyze_gcode(gcode_path):
     """
-    解析 G-code 文件，提取切片参数。
-    返回一个列表，包含首层和（当层数>1时）最后一层的参数字典。
-    每个字典的 key 完全相同，通过 layer_type ('first'/'last') 区分。
+    解析 G-code 文件，提取切片参数及打印预估时间。
+    返回包含各个参数的字典，其中 dict['print_str'] 用于对齐格式化输出。
     """
     if not os.path.exists(gcode_path):
         print(f"[ERROR] 文件不存在: {gcode_path}")
@@ -582,10 +714,26 @@ def analyze_gcode(gcode_path):
     config = {}
     layer_z_list = []
     total_layers_cfg = 0
+    print_time = "unknowntime"
 
     with open(gcode_path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             line_str = line.strip()
+
+            # 提取预计打印时间
+            if print_time == "unknowntime":
+                m_time = re.search(r';\s*(?:estimated printing time|total estimated time)\s*(?:\([^)]*\))?\s*=\s*([^\r\n]+)', line_str, re.IGNORECASE)
+                if m_time:
+                    raw_time = m_time.group(1).strip()
+                    clean_time = re.sub(r'\s+', '', raw_time)
+                    if clean_time:
+                        print_time = clean_time
+                else:
+                    m73_match = re.search(r'M73\s+P0\s+R(\d+)', line_str)
+                    if m73_match:
+                        mins = int(m73_match.group(1))
+                        h, m = divmod(mins, 60)
+                        print_time = f"{h}h{m}m" if h > 0 else f"{m}m"
 
             # 总层数
             if total_layers_cfg == 0:
@@ -643,30 +791,55 @@ def analyze_gcode(gcode_path):
 
     total_layers = total_layers_cfg or len(layer_z_list) or 0
 
-    # 构建首层字典
     first_layer = {
-        "layer_type": "first",
+        "#": "firs",
         "nozzle_temp": config.get("noz_first") or config.get("noz_other"),
         "bed_temp": config.get("bed_first") or config.get("bed_other"),
         "layer_h": config.get("h_first") or config.get("h_std"),
         "line_w": config.get("w_first") or config.get("w_std"),
         "z": config.get("h_first") or (layer_z_list[0] if layer_z_list else None),
-        "total_layers": total_layers
+        "total_layers": total_layers,
+        "print_time": print_time
     }
 
-    # 只有一层时，直接返回首层
     if total_layers <= 1:
-        return [first_layer]
+        last_layer = None
+        layers_list = [first_layer]
+    else:
+        last_layer = {
+            "#": "last",
+            "nozzle_temp": config.get("noz_other") or first_layer["nozzle_temp"],
+            "bed_temp": config.get("bed_other") or first_layer["bed_temp"],
+            "layer_h": config.get("h_std") or first_layer["layer_h"],
+            "line_w": config.get("w_top") or config.get("w_std") or first_layer["line_w"],
+            "z": config.get("max_z") or (layer_z_list[-1] if layer_z_list else None),
+        }
+        layers_list = [first_layer, last_layer]
 
-    # 构建末层字典
-    last_layer = {
-        "layer_type": "last",
-        "nozzle_temp": config.get("noz_other") or first_layer["nozzle_temp"],
-        "bed_temp": config.get("bed_other") or first_layer["bed_temp"],
-        "layer_h": config.get("h_std") or first_layer["layer_h"],
-        "line_w": config.get("w_top") or config.get("w_std") or first_layer["line_w"],
-        "z": config.get("max_z") or (layer_z_list[-1] if layer_z_list else None),
-        "total_layers": total_layers
+    # 构建紧凑格式化字符串（统一单空格分隔，消除异常大间隙）
+    lines = []
+    for d in layers_list:
+        parts = [
+            d["#"],
+            f"noz={d['nozzle_temp']}",
+            f"bed={d['bed_temp']}",
+            f"Lh={d['layer_h']}mm",
+            f"w={d['line_w']}mm",
+            f"z={d['z']}mm",
+        ]
+        if d["#"] == "firs":
+            parts.append(f"Ln={d['total_layers']}")
+            parts.append(f"{d['print_time']}")
+        lines.append(" ".join(parts))
+
+    print_str = "\n".join(lines)
+
+    return {
+        "print_str": print_str,
+        "print_time": print_time,
+        "total_layers": total_layers,
+        "first_layer": first_layer,
+        "last_layer": last_layer,
+        "config": config
     }
 
-    return [first_layer, last_layer]

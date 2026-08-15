@@ -1,7 +1,7 @@
 import cadquery as cq
 
 # ========== 参数定义 ==========
-length = 227        # Y方向长度 (mm) —— 【对调】孔沿这个方向排布
+length = 82.838     # Y方向长度 (mm) —— 【对调】孔沿这个方向排布
 width = 200         # X方向长度 (mm) —— 【对调】孔沿这个方向贯穿
 thickness = 6.3       # Z方向厚度 (mm)
 hole_diam = 4.9       # 孔径 (mm)
@@ -80,11 +80,20 @@ walls = (
 result = result.union(walls)
 
 # ========== 验证信息输出 ==========
-print(f"成功排布孔数: {num_holes} 个")
+print(f"L {length} 成功排布孔数: {num_holes} 个")
 print(f"孔与孔间隙: {gap} mm ，wall_thickness_y={wall_thickness_y}")
 print(f"左右两端留白: {(length - total_pattern_width)/2.0:.2f} mm")
 
 # ========== 导出与显示 ==========
-cq.exporters.export(result, __file__ + f"_{hole_diam}mm_L{length}.step")
+step_file=__file__ + f"_{hole_diam}mm_L{length}.step"
+cq.exporters.export(result,step_file)
 if "show_object" in globals():
     show_object(result)
+
+import bambu_slicer
+f = bambu_slicer.to_gcode(
+    cq_object=result,
+    name=step_file,
+    output_dir=r"D:\test\bambu-studio",
+    material='PETG',
+)
