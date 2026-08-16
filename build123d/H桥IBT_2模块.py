@@ -8,49 +8,63 @@ write_gcode = 1
 # ============================================================
 # 1. 极简核心尺寸参数定义
 # ============================================================
-top_inner_L = 51.0       # 顶部内腔长 (X方向)
-top_inner_W = 51.0       # 顶部内腔宽 (Y方向)
+top_inner_L = 48.0       # 顶部内腔长 (X方向)
+top_inner_W = 48.0       # 顶部内腔宽 (Y方向)
 
-bottom_inner_L = 34.0    # 底部内腔长 (X方向形成倒梯形)
-bottom_inner_W = 51.0    # 底部内腔宽 (Y方向与顶部一致)
+bottom_inner_L = 34.0    # 底部内腔长 (X方向，恢复标准对称定义)
+bottom_inner_W = 51.0    # 底部内腔宽 (Y方向)
 
-inner_height = 20.0      # 内腔高度
+inner_height = 18.0      # 内腔高度
 wall_thick = 2.0         # 侧壁厚度
 base_thickness = 2.0     # 底板厚度
 box_height = inner_height + base_thickness
 
-drill_diameter = 3.3     # 钻孔直径
+drill_diameter = 3.4     # 钻孔直径
 hole_spacing = 40.0      # 4孔正方形边长
 
-cutout_width = 30.0      # 镂空宽度
-cutout_depth = 20.0      # 镂空向下深度
+# ------------------------------------------------------------
+# ★ 侧壁切除（镂空）3 参数独立控制 ★
+# ------------------------------------------------------------
+cutout_depth = inner_height                # 镂空向下深度
+
+# 1) -Y 侧壁切除宽度 (整体单侧控制)
+cutout_width_neg_y = 32                 
+
+# 2) +Y 侧壁切除宽度 (+X / -X 两侧分别控制)
+cutout_width_pos_y_pos_x = 17.0            # +Y 面上 +X 方向切除半宽
+cutout_width_pos_y_neg_x = 5             # +Y 面上 -X 方向切除半宽
 
 # ============================================================
-# 2. 自动化外径坐标与打孔点位计算
+# 2. 自动化外径坐标与切除中心点计算
 # ============================================================
 top_outer_L = top_inner_L + 2 * wall_thick
 top_outer_W = top_inner_W + 2 * wall_thick
 bottom_outer_L = bottom_inner_L + 2 * wall_thick
 bottom_outer_W = bottom_inner_W + 2 * wall_thick
 
+# +Y 侧壁切除的总宽度与偏心 X 坐标计算
+pos_y_cut_total_width = cutout_width_pos_y_pos_x + cutout_width_pos_y_neg_x
+pos_y_cut_x_center = (cutout_width_pos_y_pos_x - cutout_width_pos_y_neg_x) / 2.0
+
 # 4个孔的绝对坐标
 hs = hole_spacing / 2.0
-pts = [(hs, hs), (hs, -hs), (-hs, hs), (-hs, -hs)]
+hsdy = 2.0
+pts = [(hs, hs+hsdy), (hs, -hs+hsdy), (-hs, hs+hsdy), (-hs, -hs+hsdy)]
 
 # ============================================================
 # 3. 三维建模核心逻辑
 # ============================================================
-print("🚀 开始生成单向倒梯形盒子...")
+print("🚀 开始生成标准对称外壳及非对称切除盒子...")
 
 with BuildPart() as box:
     # ----------------------------------------------------
-    # 3.1 构造外壳实体
+    # 3.1 构造对称外壳实体 ( ruled=True 保证垂直拉直面 )
     # ----------------------------------------------------
     with BuildSketch(Plane.XY):
         Rectangle(bottom_outer_L, bottom_outer_W)
     with BuildSketch(Plane.XY.offset(box_height)):
         Rectangle(top_outer_L, top_outer_W)
-    loft()
+    loft(ruled=True)
 
     # ----------------------------------------------------
     # 3.2 构造内腔并掏空
@@ -64,28 +78,34 @@ with BuildPart() as box:
         Rectangle(bottom_inner_L, bottom_inner_W)
     with BuildSketch(Plane.XY.offset(box_height + extra_cut)):
         Rectangle(top_cut_L, top_cut_W)
-    loft(mode=Mode.SUBTRACT)
+    loft(ruled=True, mode=Mode.SUBTRACT)
 
     # ----------------------------------------------------
-    # 3.3 生成实心螺丝外柱 (★终极修复1：从 Z=0 拔地而起，彻底消除底部悬空★)
+    # 3.3 生成实心螺丝外柱 (从 Z=0 拔地而起)
     # ----------------------------------------------------
-    with BuildSketch(Plane.XY): # 直接扎根于绝对原点 Z=0
+    with BuildSketch(Plane.XY): 
         with Locations(*pts):
-            Circle(radius=drill_diameter / 2.0 + min(wall_thick, 1.5))
-    extrude(amount=box_height) # 一柱擎天直达顶面，保证底面100%着床
+            Circle(radius=drill_diameter / 2.0 + min(wall_thick, 2))
+    extrude(amount=box_height)
 
     # ----------------------------------------------------
-    # 3.4 垂直两面(Y向面)中间镂空
+    # 3.4 侧壁按 3 参数精准挖空切除
     # ----------------------------------------------------
-    cutout_z_center = box_height - (cutout_depth / 2.0) 
-    with Locations((0.0, 0.0, cutout_z_center)):
-        Box(cutout_width, top_outer_W + 10.0, cutout_depth, mode=Mode.SUBTRACT)
+    cutout_z_center = box_height - (cutout_depth / 2.0)
+    
+    # a. -Y 侧壁切除 (-Y 面)
+    with Locations((0.0, -top_outer_W / 2.0, cutout_z_center)):
+        Box(cutout_width_neg_y, wall_thick + 10.0, cutout_depth, mode=Mode.SUBTRACT)
+
+    # b. +Y 侧壁切除 (+Y 面，支持 +X/-X 非对称定义)
+    with Locations((pos_y_cut_x_center, top_outer_W / 2.0, cutout_z_center)):
+        Box(pos_y_cut_total_width, wall_thick + 10.0, cutout_depth, mode=Mode.SUBTRACT)
 
     # ----------------------------------------------------
-    # 3.5 Y=16 内部加强筋横断墙 (降高 2.5mm)
+    # 3.5 Y=16 内部加强筋横断墙
     # ----------------------------------------------------
     rib_y = 16.0
-    rib_top_z = box_height - 2.5
+    rib_top_z = box_height - 0 #2.5
     rib_height_ratio = (rib_top_z - base_thickness) / inner_height
     rib_top_L = bottom_inner_L + (top_inner_L - bottom_inner_L) * rib_height_ratio
 
@@ -95,25 +115,19 @@ with BuildPart() as box:
     with BuildSketch(Plane.XY.offset(rib_top_z)):
         with Locations((0.0, rib_y)):
             Rectangle(rib_top_L + 2.0, wall_thick)
-    loft()
+    loft(ruled=True)
 
     # ----------------------------------------------------
-    # 3.6 切割加强筋 U 型槽 (★终极修复2：摒弃 2D 草图，使用 3D 实体暴力切割★)
+    # 3.6 切割加强筋中央圆洞
     # ----------------------------------------------------
-    slot_w = 10.0
-    slot_r = slot_w / 2.0
-    slot_depth = wall_thick + 10.0 # 足够深，保证把墙切透
+    hole_r = 5.0
+    hole_depth = wall_thick + 10.0
 
-    # a. 底部完美的半圆倒角 (圆柱体，绕X轴旋转90度横跨Y轴)
-    with Locations((0.0, rib_y, base_thickness + slot_r)):
-        Cylinder(radius=slot_r, height=slot_depth, rotation=(90, 0, 0), mode=Mode.SUBTRACT)
-
-    # b. 顶部的直筒矩形开口 (中心Z轴稍微往下沉0.1mm，确保和下面半圆互相嵌套，不留膜)
-    with Locations((0.0, rib_y, base_thickness + slot_r + inner_height / 2.0 - 0.1)):
-        Box(slot_w, slot_depth, inner_height + 0.2, mode=Mode.SUBTRACT)
+    with Locations((0.0, rib_y, base_thickness + hole_r)):
+        Cylinder(radius=hole_r, height=hole_depth, rotation=(90, 0, 0), mode=Mode.SUBTRACT)
 
     # ----------------------------------------------------
-    # 3.7 全局贯穿打孔 (从地底 Z=-10 强行向上贯穿)
+    # 3.7 全局贯穿打孔
     # ----------------------------------------------------
     with BuildSketch(Plane.XY.offset(-10.0)): 
         with Locations(*pts):

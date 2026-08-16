@@ -316,28 +316,35 @@ def add_time_mark(obj, smark='', x=0, y=-7.5, plane='top', mode='auto', thicknes
     return res_obj, smark
 #
 
-import cadquery as cq
-import traceback
-
 def add_brim(obj, extend=5.0, thickness=0.4, overlap=0.5):
     """
-    【终极调试与破局版：彻底放弃 Union 融合，改用 Compound 组合】
-    包含详细打印日志，方便定位任何几何计算异常。
+    【修复版 3D 裙边生成逻辑】
+    - 解决 obj.val() 导致 Workplane 栈中 STEP 模型丢失的问题
+    - 支持底面由多个离散面组成的复杂 STEP 几何体
+    - 使用 Compound 避免底层 OpenCASCADE 布尔融合崩溃
     """
-    print("\n" + "="*60)
     print("🛠️ [Brim Debug] 开始执行异形裙边生成逻辑...")
     print("="*60)
     
     # ==========================================
-    # 1. 智能类型转换机制
+    # 1. 智能类型转换机制 (修复多模型丢失 Bug)
     # ==========================================
     is_shape_input = isinstance(obj, cq.Shape)
     if is_shape_input:
-        wp = cq.Workplane("XY").add(obj)
         base_shape = obj
+        wp = cq.Workplane("XY").add(base_shape)
     elif isinstance(obj, cq.Workplane):
-        wp = obj
-        base_shape = obj.val()
+        all_objects = obj.vals()  # 提取栈里所有的对象，而不是仅取 top (.val())
+        if not all_objects:
+            print("❌ [Brim Debug] 输入的 Workplane 中没有有效几何体！")
+            return obj
+        elif len(all_objects) == 1:
+            base_shape = all_objects[0]
+        else:
+            # 包含多个对象（如原始 Block + 导入的 STEP），打包为统一 Compound
+            base_shape = cq.Compound.makeCompound(all_objects)
+            
+        wp = cq.Workplane("XY").add(base_shape)
     else:
         try:
             base_shape = cq.Shape(obj.wrapped)
@@ -347,82 +354,93 @@ def add_brim(obj, extend=5.0, thickness=0.4, overlap=0.5):
             print("❌ [Brim Debug] 无法识别输入对象类型！")
             return obj
 
-    print(f"✅ [Brim Debug] 步骤1: 原始模型解析成功，体积: {base_shape.Volume():.2f} mm³")
+    print(f"✅ [Brim Debug] 步骤1: 原始模型解析成功，总体积: {base_shape.Volume():.2f} mm³")
 
     try:
         # ==========================================
-        # 2. 提取最外圈轮廓
+        # 2. 智能提取 Zmin 贴地面轮廓 (支持多面组合)
         # ==========================================
         bbox = base_shape.BoundingBox()
         zmin = bbox.zmin
         print(f"📊 [Brim Debug] 步骤2: 包围盒 Zmin 基准 = {zmin:.3f} mm")
 
-        # 获取所有指向底部的面
-        bottom_faces = wp.faces("<Z").vals()
-        print(f"🔎 [Brim Debug] 步骤2: 共提取到 {len(bottom_faces)} 个底部平面")
+        # 筛选离 Zmin 最近且朝下的所有底面（容差 0.05mm，防止极小浮点误差）
+        all_bottom_faces = wp.faces("<Z").vals()
+        bottom_faces = [f for f in all_bottom_faces if abs(f.BoundingBox().zmin - zmin) < 0.05]
         
-        if len(bottom_faces) == 0:
-            raise ValueError("未找到任何底部平面！")
+        if not bottom_faces:
+            bottom_faces = all_bottom_faces  # 兜底降级：使用所有朝下的面
+            
+        if not bottom_faces:
+            raise ValueError("模型未找到任何朝下的底面！")
 
-        # 防御性编程：如果底面有多个（比如倒角导致的碎面），取面积最大的那个
-        largest_face = max(bottom_faces, key=lambda f: f.Area())
-        outer_wire = largest_face.outerWire()
-        print(f"✅ [Brim Debug] 步骤2: 成功提取最大底面的最外圈轮廓 (Wire)")
+        print(f"🔎 [Brim Debug] 步骤2: 成功捕捉到位于 Zmin 平面的 {len(bottom_faces)} 个贴地面")
 
         # ==========================================
         # 3. 构造 3D 重叠裙边
         # ==========================================
-        print(f"⚙️ [Brim Debug] 步骤3: 正在向外扩展 {extend}mm, 向内咬合 {overlap}mm...")
-        
-        outer_solid_wp = (
-            cq.Workplane("XY", origin=(0, 0, zmin))
-            .add(outer_wire)
-            .toPending()
-            .offset2D(extend, kind="arc")
-            .extrude(thickness)
-        )
-        print(f"✅ [Brim Debug] 步骤3: 外圈拉伸成功，体积: {outer_solid_wp.val().Volume():.2f} mm³")
+        print(f"⚙️ [Brim Debug] 步骤3: 向外扩展 {extend}mm, 向内咬合 {overlap}mm...")
 
-        inner_solid_wp = (
-            cq.Workplane("XY", origin=(0, 0, zmin))
-            .add(outer_wire)
-            .toPending()
-            .offset2D(-overlap, kind="arc") 
-            .extrude(thickness)
-        )
-        print(f"✅ [Brim Debug] 步骤3: 内圈(掏空基准)拉伸成功，体积: {inner_solid_wp.val().Volume():.2f} mm³")
+        brim_solids = []
+        for idx, face in enumerate(bottom_faces):
+            wire = face.outerWire()
+            
+            # 1. 生成外扩轮廓实体
+            outer_solid = (
+                cq.Workplane("XY", origin=(0, 0, zmin))
+                .add(wire)
+                .toPending()
+                .offset2D(extend, kind="arc")
+                .extrude(thickness)
+                .val()
+            )
+            
+            # 2. 生成内缩轮廓实体 (掏空用)
+            inner_solid = (
+                cq.Workplane("XY", origin=(0, 0, zmin))
+                .add(wire)
+                .toPending()
+                .offset2D(-overlap, kind="arc")
+                .extrude(thickness)
+                .val()
+            )
+            
+            # 3. 切割生成单块裙边
+            single_brim = outer_solid.cut(inner_solid)
+            brim_solids.append(single_brim)
 
-        brim_frame = outer_solid_wp.cut(inner_solid_wp)
-        brim_shape = brim_frame.val()
-        print(f"✅ [Brim Debug] 步骤3: 布尔切割(外-内)成功！生成的裙边体积: {brim_shape.Volume():.2f} mm³")
+        # 如果底面有多个独立部分，融合成整张裙边网格
+        final_brim = brim_solids[0]
+        for b in brim_solids[1:]:
+            final_brim = final_brim.union(b)
+
+        print(f"✅ [Brim Debug] 步骤3: 异形裙边构建成功！裙边体积: {final_brim.Volume():.2f} mm³")
 
         # ==========================================
-        # 4. 破局核心：使用 Compound (组合) 替代 Union (融合)
+        # 4. 组合模型与裙边 (Compound 打包)
         # ==========================================
-        print(f"🔗 [Brim Debug] 步骤4: 绕过底层 Union 拓扑漏洞，将两者打包为 Compound...")
+        print(f"🔗 [Brim Debug] 步骤4: 将原始实体与裙边组合为 Compound...")
+        compound_shape = cq.Compound.makeCompound([base_shape, final_brim])
         
-        # 将原始模型和生成的裙边强行“放进同一个组”中，不做网格和面的合并
-        compound_shape = cq.Compound.makeCompound([base_shape, brim_shape])
-        
-        print(f"🎉 [Brim Debug] 步骤4: Compound 打包成功！总组合体积: {compound_shape.Volume():.2f} mm³")
+        print(f"🎉 [Brim Debug] 步骤4: 打包完成！最终总体积: {compound_shape.Volume():.2f} mm³")
         print("="*60 + "\n")
         
-        # 恢复输出类型
         return compound_shape if is_shape_input else cq.Workplane("XY").add(compound_shape)
 
     except Exception as e:
         # ==========================================
-        # 5. 详细的报错捕获与降级
+        # 5. 异常安全降级逻辑
         # ==========================================
-        print(f"❌ [Brim Debug] 发生异常: {str(e)}")
-        traceback.print_exc()  # 打印完整堆栈，方便你我定位到底错在哪一行
-        print(f"⚠️ [Brim Debug] 已触发降级机制：退回使用 BoundingBox 矩形裙边...")
+        print(f"❌ [Brim Debug] 异形裙边计算异常: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        print(f"⚠️ [Brim Debug] 触发降级机制：退回使用外接矩形裙边...")
         print("="*60 + "\n")
         return add_brim_bounding_box(obj, extend, thickness, base_shape)
 
 
 def add_brim_bounding_box(obj, extend, thickness, base_shape):
-    """【绝对安全兜底版】基于 BoundingBox 生成标准矩形外接裙边，同样使用 Compound"""
+    """【绝对安全兜底版】基于 BoundingBox 生成标准矩形外接裙边"""
     bbox = base_shape.BoundingBox()
     zmin = bbox.zmin
 
@@ -437,10 +455,8 @@ def add_brim_bounding_box(obj, extend, thickness, base_shape):
         .extrude(thickness)
     )
 
-    # 兜底函数同样不再使用 union，使用组合
     compound_shape = cq.Compound.makeCompound([base_shape, brim_plate.val()])
     return compound_shape if isinstance(obj, cq.Shape) else cq.Workplane("XY").add(compound_shape)
-
 
 
     
