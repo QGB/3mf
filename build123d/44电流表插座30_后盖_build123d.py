@@ -89,7 +89,7 @@ for p in pts:
         seen.add(p)
         unique_pts.append(p)
 pts = unique_pts
-pts=[(44/2-6,44/2-12),(-(44/2-12),-(44/2-6),)]
+pts=[(44/2-12,44/2-6),(-(44/2-6),-(44/2-12),)]
 # 2.4 打印详细尺寸与坐标信息
 print("\n" + "="*80)
 print("📐 倒梯形盒子 几何尺寸与拔模倾角计算结果表")
@@ -147,21 +147,31 @@ with BuildPart() as box:
 
     loft(mode=Mode.SUBTRACT)  # 掏空内腔
 
-    # 3.3 顶部均匀打孔
+# ============================================================
+    # 3.3 生成直达顶面的螺丝柱空心圆管
+    # ============================================================
     if pts:
-        top_face = box.faces().sort_by(Axis.Z)[-1]
-        with Locations(top_face):
+        # 1. 在螺丝孔坐标处生成实心外柱 (从内腔底板 base_thickness 向上延伸至顶面)
+        with BuildSketch(Plane.XY.offset(base_thickness)):
+            with Locations(*pts):
+                Circle(radius=drill_diameter / 2.0 + min(wall_thick,1.5))
+        extrude(amount=inner_height)
+
+        # 2. 全局绝对坐标系贯穿打孔 (从 Z=0 底面直接向上切削，彻底解决孔位偏移问题)
+        with BuildSketch(Plane.XY):
             with Locations(*pts):
                 if drill_diameter:
-                    Hole(radius=drill_diameter / 2.0, depth=box_height + 5.0)
-# ============================================================
+                    Circle(radius=drill_diameter / 2.0)
+        extrude(amount=box_height + 5.0, mode=Mode.SUBTRACT)
+
     # 3.4 -X 侧壁顶部中点 U型缺口 (圆心完全同原圆孔，仅向上开口)
     # ============================================================
+    du=4.4    
     with BuildSketch(Plane.YZ.offset(-(top_inner_L / 2 + wall_thick))) as u_sk:
-        with Locations((0.0, box_height - 4.5 / 2)):  # 严格保持原圆孔圆心位置不变
-            Circle(4.5 / 2)
+        with Locations((0.0, box_height - du / 2)):  # 严格保持原圆孔圆心位置不变
+            Circle(du / 2)
         with Locations((0.0, box_height)):            # 从圆心向上切出直边开口 (切透顶面)
-            Rectangle(4.5, 4.5)
+            Rectangle(du,du)
 
     extrude(amount=10.0, mode=Mode.SUBTRACT)          # 向内切透 2mm 侧壁      # 向 +X 方向切透 2mm 壁厚
 
