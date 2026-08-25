@@ -24,7 +24,7 @@ box_height = inner_depth + base_thickness
 
 # -- 附加无底方框参数 (长边24mm外侧) --
 ext_frame_len = 31.0   # 方框长度 (X方向, 对应24mm边居中)
-ext_frame_width = 17 # 方框宽度 (Y方向)
+ext_frame_width = 17.0 # 方框宽度 (Y方向)
 
 # ============================================================
 # 2. 精确极值计算 (以原点0,0为中心)
@@ -136,40 +136,69 @@ with BuildPart() as box:
                 if (target_v.X - pt[0])**2 + (target_v.Y - pt[1])**2 < 1.0:
                     fillet(target_v, radius=r_in)
 
-    # 5.2 外壁轮廓扩展 (壁厚1.8mm)
+    # 5.2 提取内腔的等距扩展作为品字形外墙基础
     with BuildSketch() as outer_sk:
         add(inner_sk)
         offset(amount=wall_thick, kind=Kind.ARC)
 
-    # 5.3 拉伸品字外壳主体
+    # 5.3 组合完整的外部实体轮廓 (包含方框及缺口平滑过渡)
+    y_attach_wall = y_min - wall_thick  # -9.8
+    frame_y_center = y_attach_wall - (ext_frame_width / 2.0)
+    
+    with BuildSketch() as full_outer_sk:
+        # 添加品字形主外轮廓
+        add(outer_sk)
+        
+        # 添加下方拓展方框
+        with Locations((0, frame_y_center)):
+            Rectangle(ext_frame_len, ext_frame_width)
+            
+        # 填充两侧缺口：通过斜面从 Y=-2.0 处自然延伸连接至方框，形成梯形填充
+        Polygon([(13.8, -2.0), (15.5, y_attach_wall), (13.8, y_attach_wall)])
+        Polygon([(-13.8, -2.0), (-15.5, y_attach_wall), (-13.8, y_attach_wall)])
+        
+        # --- 动态寻点并应用平滑圆角 ---
+        
+        # (1) 方框远端两侧外圆角: 总长31, 直线要求29, 倒角必为 R=(31-29)/2=1.0mm
+        far_verts = [v for v in full_outer_sk.vertices() if v.Y < y_attach_wall - ext_frame_width + 1.0]
+        if far_verts:
+            fillet(far_verts, radius=1.0)
+            
+        # (2) 过渡缺口外凸角圆角 (让交接处变得丝滑)
+        trans_convex = [v for v in full_outer_sk.vertices() if abs(v.Y - y_attach_wall) < 0.5 and abs(v.X) > 15.0]
+        if trans_convex:
+            fillet(trans_convex, radius=1.5)
+            
+        # (3) 过渡缺口内凹角圆角 (与品字主体直边融合处)
+        trans_obtuse = [v for v in full_outer_sk.vertices() if abs(v.Y - (-2.0)) < 0.5 and abs(v.X) > 13.0]
+        if trans_obtuse:
+            fillet(trans_obtuse, radius=2.0)
+
+    # 5.4 拉伸整体外壳实心基体
     extrude(amount=box_height)
 
-    # 5.4 从底板上方掏空品字内腔
+    # 5.5 从底板上方开始掏空品字内腔
     with BuildSketch(Plane.XY.offset(base_thickness)):
         add(inner_sk)
     extrude(amount=inner_depth, mode=Mode.SUBTRACT)
 
-    # 5.5 距底部 24mm 长边 5mm 处打贯通长圆孔
+    # 5.6 掏空附属方框内腔 (生成无底贯通方框)
+    with BuildSketch(Plane.XY):
+        with Locations((0, frame_y_center)):
+            Rectangle(ext_frame_len - 2 * wall_thick, ext_frame_width - 2 * wall_thick)
+    extrude(amount=box_height + 5, mode=Mode.SUBTRACT)
+
+    # 5.7 距底部 24mm 长边 5mm 处打贯通长圆孔
     with BuildSketch(Plane.XY):
         with Locations((0, y_min + slot_dist_from_bot)):
             SlotOverall(width=slot_len, height=slot_h)
     extrude(amount=box_height + 5, mode=Mode.SUBTRACT)
 
-    # 5.6 距顶部短边 4mm 处打 3.4mm 贯通圆孔
+    # 5.8 距顶部短边 4mm 处打 3.4mm 贯通圆孔
     with BuildSketch(Plane.XY):
         with Locations((0, y_max - 4)):
             Circle(radius=3.4 / 2)
     extrude(amount=box_height + 5, mode=Mode.SUBTRACT)
-
-    # 5.7 在 24mm 长边外侧生成无底方框 (31mm x 27.3mm，壁厚1.8mm，贯通全高)
-    y_attach_wall = y_min #- wall_thick  # 24mm 长边外壁 Y 坐标 (-9.8mm)
-    frame_y_center = y_attach_wall - (ext_frame_width / 2.0)
-
-    with BuildSketch(Plane.XY):
-        with Locations((0, frame_y_center)):
-            Rectangle(ext_frame_len, ext_frame_width)
-            Rectangle(ext_frame_len - 2 * wall_thick, ext_frame_width - 2 * wall_thick, mode=Mode.SUBTRACT)
-    extrude(amount=box_height)
 
 print("✅ 模型生成完毕！准备输出。")
 
