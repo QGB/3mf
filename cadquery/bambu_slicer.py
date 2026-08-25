@@ -96,16 +96,26 @@ def _preprocess_dependent_json(src_path, safe_name, type_tag, model_token, overr
         print(f"[ERROR] 强制对齐配置失败 [{safe_name}]: {e}")
         raise e
  
-def to_gcode(cq_object, name="cq_model", output_dir=None, layer_height="0.3mm", material="PLA", printer_name="Elegoo Neptune 4", add_brim=0):
-    """
-    封装切片流程：转换模型、调用拓竹引擎切片、解压 G-code 并自动分析日志与打印时间
-    """
+def to_gcode(
+    cq_object,
+    name="cq_model",
+    output_dir=None,
+    layer_height="0.3mm",
+    material="PLA",
+    printer_name="Elegoo Neptune 4",
+    add_brim=0,
+):
+    """封装切片流程：转换模型、调用拓竹引擎切片、解压 G-code 并自动分析日志与打印时间"""
     # 1. 解析层高
-    lh_str = f"{float(m.group()):g}" if (m := re.search(r"\d+\.?\d*", str(layer_height))) else "0.2"
-    
+    lh_str = (
+        f"{float(m.group()):g}"
+        if (m := re.search(r"\d+\.?\d*", str(layer_height)))
+        else "0.2"
+    )
+
     # 2. 自动提取纯文件名
     clean_name = os.path.basename(name)
-    if clean_name.lower().endswith(('.step', '.solid', '.stl', '.py')):
+    if clean_name.lower().endswith((".step", ".solid", ".stl", ".py")):
         clean_name = os.path.splitext(clean_name)[0]
 
     if output_dir is None:
@@ -116,85 +126,111 @@ def to_gcode(cq_object, name="cq_model", output_dir=None, layer_height="0.3mm", 
     # 3. 匹配材质预设参数
     mat_key = material.strip().upper()
     material_overrides = MATERIAL_PRESETS.get(mat_key, MATERIAL_PRESETS["PETG"])
-    print(f"[INFO] 正在应用材质配置: {mat_key} -> 喷嘴首层 {material_overrides['nozzle_temperature_initial_layer'][0]}℃, 热床首层 {material_overrides['hot_plate_temp_initial_layer'][0]}℃")
+    print(
+        f"[INFO] 正在应用材质配置: {mat_key} -> 喷嘴首层 {material_overrides['nozzle_temperature_initial_layer'][0]}℃, 热床首层 {material_overrides['hot_plate_temp_initial_layer'][0]}℃"
+    )
 
-    # 4. 解析机型并修正软控起步与结束温度指令
+    # 4. 解析机型并修正软控起步与结束温度/抬升/电机控制指令
     try:
-        with open(DEFAULT_MACHINE_JSON, 'r', encoding='utf-8-sig') as f:
+        with open(DEFAULT_MACHINE_JSON, "r", encoding="utf-8-sig") as f:
             machine_data = json.load(f)
-        print(f"[INFO] printer_model = {machine_data.get('printer_model')!r}")
-        print(f"[INFO] inherits = {machine_data.get('inherits')!r}")
-        print(f"[INFO] printable_area = {machine_data.get('printable_area')!r}")
-        print(f"[INFO] bed_exclude_area = {machine_data.get('bed_exclude_area')!r}")
-        
-        printer_model_token = machine_data.get("printer_model") or machine_data.get("inherits") or "Elegoo Neptune 4 0.2 nozzle"
+
+        printer_model_token = (
+            machine_data.get("printer_model")
+            or machine_data.get("inherits")
+            or "Elegoo Neptune 4 0.2 nozzle"
+        )
         machine_data["printer_model"] = printer_model_token
         machine_data["type"] = "machine"
-        
+
         # 修正起始 G 代码
         if "machine_start_gcode" in machine_data:
             start_gcode = machine_data["machine_start_gcode"]
-            start_gcode = re.sub(r'M140\s+S\d+', 'M140 S[bed_temperature_initial_layer_single]', start_gcode)
-            start_gcode = re.sub(r'M104\s+S\d+', 'M104 S[nozzle_temperature_initial_layer]', start_gcode)
+            start_gcode = re.sub(
+                r"M140\s+S\d+",
+                "M140 S[bed_temperature_initial_layer_single]",
+                start_gcode,
+            )
+            start_gcode = re.sub(
+                r"M104\s+S\d+",
+                "M104 S[nozzle_temperature_initial_layer]",
+                start_gcode,
+            )
             machine_data["machine_start_gcode"] = start_gcode
 
-        # 【关键修复】修正结束 G 代码，确保包含关闭热床 (M140 S0)
-        end_gcode = machine_data.get("machine_end_gcode", "")
-        if "M140" not in end_gcode:
-            if "M104" in end_gcode:
-                end_gcode = re.sub(r'(M104\s+S0[^\n]*)', r'\1\nM140 S0 ; turn off bed', end_gcode)
-            else:
-                end_gcode = "M104 S0 ; turn off hotend\nM140 S0 ; turn off bed\n" + end_gcode
-            machine_data["machine_end_gcode"] = end_gcode
+        # 【完整修复】重构结束 G 代码：包含 E轴退丝、Z轴抬升、XY抛床、关闭加热器/风扇及关闭电机(M84)
+        complete_end_gcode = (
+            "G91 ;\n"
+            "G1 E-2 F2700 ; 退丝防拉丝\n"
+            "G1 Z30 F600 ; Z轴相对抬升 10mm\n"
+            "G90 ;\n"
+            "G1 X0 Y220 F6000 ; 移动热床向前抛出便于取件\n"
+            "M104 S0 ; 关喷头\n"
+            "M140 S0 ; 关热床\n"
+            "M106 S0 ; 关模型风扇\n"
+            "M84 ; 关闭所有电机\n"
+        )
+        machine_data["machine_end_gcode"] = complete_end_gcode
 
-        # 【关键修复】注入缺失的打印区域与排除区域
+        # 补全打印区域与界限
         if not machine_data.get("printable_area"):
-            # Elegoo Neptune 4 标准打印区域为 225×225 mm
-            # 格式为角点数组，按顺序定义矩形边界
-            El=230
-            machine_data["printable_area"] = ["0x0", f"{El}x0", f"{El}x{El}", f"0x{El}"]        
+            El = 230
+            machine_data["printable_area"] = [
+                "0x0",
+                f"{El}x0",
+                f"{El}x{El}",
+                f"0x{El}",
+            ]
         if machine_data.get("bed_exclude_area") is None:
             machine_data["bed_exclude_area"] = []
-        if not machine_data.get("printable_height"): # 如果 printable_height 也缺失，一并补上（Neptune 4 为 265mm）
+        if not machine_data.get("printable_height"):
             machine_data["printable_height"] = ["265"]
-            
-            
+
         safe_machine = os.path.join(tempfile.gettempdir(), "cli_machine.json")
-        with open(safe_machine, 'w', encoding='utf-8') as f:
+        with open(safe_machine, "w", encoding="utf-8") as f:
             json.dump(machine_data, f, ensure_ascii=False, indent=4)
-        print(f"[INFO] 成功锁定机型兼容锚点: {printer_model_token}")
+        print(f"[INFO] 成功锁定机型兼容锚点及完整结束脚本: {printer_model_token}")
     except Exception as e:
         print(f"[ERROR] 提取机型锚点失败: {e}")
         return None
 
     # 5. 对齐工艺与耗材
-    print("[INFO] 正在对工艺和耗材配置文件执行强行兼容性对齐及层高/材质参数注入...")
+    print(
+        "[INFO] 正在对工艺和耗材配置文件执行强行兼容性对齐及层高/材质参数注入..."
+    )
     process_overrides = {"layer_height": lh_str}
-    
+
     safe_process = _preprocess_dependent_json(
-        DEFAULT_PROCESS_JSON, 
-        "cli_process.json", 
-        "process", 
+        DEFAULT_PROCESS_JSON,
+        "cli_process.json",
+        "process",
         printer_model_token,
-        overrides=process_overrides
+        overrides=process_overrides,
     )
     safe_filament = _preprocess_dependent_json(
-        DEFAULT_FILAMENT_JSON, 
-        "cli_filament.json", 
-        "filament", 
+        DEFAULT_FILAMENT_JSON,
+        "cli_filament.json",
+        "filament",
         printer_model_token,
-        overrides=material_overrides
+        overrides=material_overrides,
     )
     print("[INFO] 配置文件闭环清洗完毕，安全沙盒映射成功。")
 
     # 6. 中转路径与 STL 导出
-    temp_stl = os.path.join(tempfile.gettempdir(), f"bambu_cli_temp_{clean_name}.stl")
-    temp_3mf = os.path.join(tempfile.gettempdir(), f"bambu_cli_temp_{clean_name}.3mf")
+    temp_stl = os.path.join(
+        tempfile.gettempdir(), f"bambu_cli_temp_{clean_name}.stl"
+    )
+    temp_3mf = os.path.join(
+        tempfile.gettempdir(), f"bambu_cli_temp_{clean_name}.3mf"
+    )
 
-    print("[STEP 1] 正在将 CadQuery/build123d 对象直接转换为高精度 STL 网格...")
+    print(
+        "[STEP 1] 正在将 CadQuery/build123d 对象直接转换为高精度 STL 网格..."
+    )
     try:
         if hasattr(cq_object, "part"):
             from build123d import export_stl as b3d_export_stl
+
             b3d_export_stl(cq_object.part, temp_stl, tolerance=0.01)
         elif hasattr(cq_object, "val"):
             shape_to_export = cq_object.val()
@@ -212,14 +248,25 @@ def to_gcode(cq_object, name="cq_model", output_dir=None, layer_height="0.3mm", 
     composite_settings = f"{safe_machine};{safe_process}"
     cmd = [
         DEFAULT_BAMBU_EXE,
-        "--slice", "0",
-        "--load-settings", composite_settings,
-        "--load-filaments", safe_filament,
-        "--export-3mf", temp_3mf,
-        temp_stl
+        "--slice",
+        "0",
+        "--load-settings",
+        composite_settings,
+        "--load-filaments",
+        safe_filament,
+        "--export-3mf",
+        temp_3mf,
+        temp_stl,
     ]
 
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore')
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="ignore",
+    )
 
     if result.returncode != 0:
         print("[ERROR] 拓竹切片失败！详细的底层错误日志如下：")
@@ -227,49 +274,60 @@ def to_gcode(cq_object, name="cq_model", output_dir=None, layer_height="0.3mm", 
         print(result.stdout if result.stdout else "[无输出]")
         print("====== STDERR LOG ======")
         print(result.stderr if result.stderr else "[无输出]")
-        if os.path.exists(temp_stl): os.remove(temp_stl)
+        if os.path.exists(temp_stl):
+            os.remove(temp_stl)
         return None
 
     # 8. 提取 G-code 并自动解析分析参数
-    print("[STEP 3] 切片成功，正在从 3MF 数据包中解压并提取纯 G-code...")
-    temp_extracted_gcode = os.path.join(tempfile.gettempdir(), f"temp_{clean_name}.gcode")
+    print(
+        "[STEP 3] 切片成功，正在从 3MF 数据包中解压并提取纯 G-code..."
+    )
+    temp_extracted_gcode = os.path.join(
+        tempfile.gettempdir(), f"temp_{clean_name}.gcode"
+    )
 
     if os.path.exists(temp_3mf):
         try:
-            with zipfile.ZipFile(temp_3mf, 'r') as zip_ref:
+            with zipfile.ZipFile(temp_3mf, "r") as zip_ref:
                 gcode_in_zip = "Metadata/plate_1.gcode"
                 if gcode_in_zip in zip_ref.namelist():
-                    with zip_ref.open(gcode_in_zip) as source, open(temp_extracted_gcode, 'wb') as target:
+                    with (
+                        zip_ref.open(gcode_in_zip) as source,
+                        open(temp_extracted_gcode, "wb") as target,
+                    ):
                         shutil.copyfileobj(source, target)
 
-                    # 分析临时 G-code，提取打印时间与格式化参数字符串
-                    gcode_info = analyze_gcode(temp_extracted_gcode) #analyze_gcode 已经定义，不用生成这个函数
-                    print_time = gcode_info["print_time"]# 出错直接退出，因为不应该出错
+                    gcode_info = analyze_gcode(temp_extracted_gcode)
+                    print_time = gcode_info["print_time"]
 
-                    # 重命名保存至最终输出路径
                     output_gcode_name = f"{clean_name}_{lh_str}mm_{material}_{printer_name}_{print_time}.gcode"
-                    final_gcode_path = os.path.join(output_dir, output_gcode_name)
+                    final_gcode_path = os.path.join(
+                        output_dir, output_gcode_name
+                    )
                     shutil.move(temp_extracted_gcode, final_gcode_path)
 
-                    # 输出分析结果与路径
-                    print(gcode_info["print_str"], '\n', f"路径 {final_gcode_path}")
+                    print(gcode_info["print_str"], "\n", f"路径 {final_gcode_path}")
                     return final_gcode_path
                 else:
-                    print("[WARNING] 3mf 包内未发现 gcode 轨迹，请检查配置参数。")
+                    print(
+                        "[WARNING] 3mf 包内未发现 gcode 轨迹，请检查配置参数。"
+                    )
                     return None
         except Exception as e:
             print(f"[ERROR] 提取 G-code 失败: {e}")
             return None
         finally:
             print("[STEP 4] 正在清理临时中转文件...")
-            if os.path.exists(temp_stl): os.remove(temp_stl)
-            if os.path.exists(temp_3mf): os.remove(temp_3mf)
-            if os.path.exists(temp_extracted_gcode): os.remove(temp_extracted_gcode)
-            print("   -> [INFO] 清理完毕。")
+            if os.path.exists(temp_stl):
+                os.remove(temp_stl)
+            if os.path.exists(temp_3mf):
+                os.remove(temp_3mf)
+            if os.path.exists(temp_extracted_gcode):
+                os.remove(temp_extracted_gcode)
+            print("    -> [INFO] 清理完毕。")
     else:
         print("[ERROR] 未找到生成的临时 3mf 文件。")
-        return None 
-
+        return None
         
 ########################
 

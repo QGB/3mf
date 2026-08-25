@@ -7,7 +7,7 @@ from build123d import *
 # ============================================================
 # -- 核心内腔尺寸 (内径) --
 inner_h = 16.0         # 内部总高 (Y方向)
-inner_w_max = 24     # 底部长边最大宽度 (X方向)
+inner_w_max = 24.0     # 底部长边最大宽度 (X方向)
 inner_w_top = 12.0     # 顶部小宽度 (X方向)
 straight_height = 9.8  # 底边向上直边高度
 
@@ -18,9 +18,13 @@ slot_dist_from_bot = 5.0   # 距离底部 24mm 长边的垂直距离
 
 # -- 外壳与厚度参数 --
 wall_thick = 1.8      # 侧壁厚度 (mm)
-inner_depth = 20     # 内腔深度 (mm)
+inner_depth = 20.0    # 内腔深度 (mm)
 base_thickness = 2.0   # 底板厚度 (mm)
 box_height = inner_depth + base_thickness
+
+# -- 附加无底方框参数 (长边24mm外侧) --
+ext_frame_len = 31.0   # 方框长度 (X方向, 对应24mm边居中)
+ext_frame_width = 17 # 方框宽度 (Y方向)
 
 # ============================================================
 # 2. 精确极值计算 (以原点0,0为中心)
@@ -30,7 +34,7 @@ y_min = -inner_h / 2.0        # -8.0
 x_max = inner_w_max / 2.0     # ±12.0
 x_top = inner_w_top / 2.0     # ±6.0
 
-y_slant_start = y_min + straight_height # -8.0 + 9.0 = +1.0
+y_slant_start = y_min + straight_height # -8.0 + 9.8 = +1.8
 
 # ============================================================
 # 3. 自动生成对称多边形 (品字母头内腔)
@@ -38,7 +42,7 @@ y_slant_start = y_min + straight_height # -8.0 + 9.0 = +1.0
 right_half = [
     (0.0,   y_max),           # 0. 顶部中心 (0, 8)
     (x_top, y_max),           # 1. 顶部右角 (6, 8)
-    (x_max, y_slant_start),   # 2. 右侧斜边起点 (12, 1)
+    (x_max, y_slant_start),   # 2. 右侧斜边起点 (12, 1.8)
     (x_max, y_min),           # 3. 右下直角 (12, -8)
     (0.0,   y_min)            # 4. 底部中心 (0, -8)
 ]
@@ -55,7 +59,7 @@ CORNER_FILLETS_CONFIG = {
 }
 
 # ============================================================
-# 4. 逐拐角精准极限算法 (复用您的安全防护逻辑)
+# 4. 逐拐角精准极限算法
 # ============================================================
 def analyze_corners_and_calc_limits(pts, wall_thickness, safety_margin=0.01):
     n = len(pts)
@@ -132,44 +136,52 @@ with BuildPart() as box:
                 if (target_v.X - pt[0])**2 + (target_v.Y - pt[1])**2 < 1.0:
                     fillet(target_v, radius=r_in)
 
-    # 5.2 外壁轮廓扩展 (壁厚2mm)
+    # 5.2 外壁轮廓扩展 (壁厚1.8mm)
     with BuildSketch() as outer_sk:
         add(inner_sk)
         offset(amount=wall_thick, kind=Kind.ARC)
 
-    # 5.3 拉伸外壳主体
+    # 5.3 拉伸品字外壳主体
     extrude(amount=box_height)
 
-    # 5.4 从底板上方掏空内腔
+    # 5.4 从底板上方掏空品字内腔
     with BuildSketch(Plane.XY.offset(base_thickness)):
         add(inner_sk)
     extrude(amount=inner_depth, mode=Mode.SUBTRACT)
 
     # 5.5 距底部 24mm 长边 5mm 处打贯通长圆孔
-    # 底部 24mm 边 Y坐标为 y_min (-8.0)，向上 5mm 处坐标为 (0, -3.0)
     with BuildSketch(Plane.XY):
         with Locations((0, y_min + slot_dist_from_bot)):
             SlotOverall(width=slot_len, height=slot_h)
     extrude(amount=box_height + 5, mode=Mode.SUBTRACT)
 
-    # 5.6 距顶部短边 5mm 处打 3mm 贯通圆孔
+    # 5.6 距顶部短边 4mm 处打 3.4mm 贯通圆孔
     with BuildSketch(Plane.XY):
-        with Locations((0, y_max-4)):
+        with Locations((0, y_max - 4)):
             Circle(radius=3.4 / 2)
     extrude(amount=box_height + 5, mode=Mode.SUBTRACT)
+
+    # 5.7 在 24mm 长边外侧生成无底方框 (31mm x 27.3mm，壁厚1.8mm，贯通全高)
+    y_attach_wall = y_min #- wall_thick  # 24mm 长边外壁 Y 坐标 (-9.8mm)
+    frame_y_center = y_attach_wall - (ext_frame_width / 2.0)
+
+    with BuildSketch(Plane.XY):
+        with Locations((0, frame_y_center)):
+            Rectangle(ext_frame_len, ext_frame_width)
+            Rectangle(ext_frame_len - 2 * wall_thick, ext_frame_width - 2 * wall_thick, mode=Mode.SUBTRACT)
+    extrude(amount=box_height)
 
 print("✅ 模型生成完毕！准备输出。")
 
 # ============================================================
-# 7. 渲染与输出 (严格按您的原始代码)
+# 6. 渲染与输出
 # ============================================================
 import os, bambu_slicer, cadquery as cq
-
 
 step_file = os.path.splitext(__file__)[0] + f"_{base_thickness}.step"
 export_step(box.part, step_file)
 cq_object = cq.Shape(box.part.wrapped)
-cq_object=bambu_slicer.add_brim(cq_object,0)
+cq_object = bambu_slicer.add_brim(cq_object, 0)
 
 if "show_object" in locals():
     show_object(cq_object, name=step_file[:-5])
