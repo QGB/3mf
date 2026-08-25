@@ -2,7 +2,7 @@ import os, math
 import cadquery as cq
 import build123d_fix
 from build123d import *
-
++Y  +X 方向 需要从上向下切 边缘芯片方块
 write_gcode = 1
 
 # ============================================================

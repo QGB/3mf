@@ -147,6 +147,18 @@ def to_gcode(cq_object, name="cq_model", output_dir=None, layer_height="0.3mm", 
                 end_gcode = "M104 S0 ; turn off hotend\nM140 S0 ; turn off bed\n" + end_gcode
             machine_data["machine_end_gcode"] = end_gcode
 
+        # 【关键修复】注入缺失的打印区域与排除区域
+        if not machine_data.get("printable_area"):
+            # Elegoo Neptune 4 标准打印区域为 225×225 mm
+            # 格式为角点数组，按顺序定义矩形边界
+            El=230
+            machine_data["printable_area"] = ["0x0", f"{El}x0", f"{El}x{El}", f"0x{El}"]        
+        if machine_data.get("bed_exclude_area") is None:
+            machine_data["bed_exclude_area"] = []
+        if not machine_data.get("printable_height"): # 如果 printable_height 也缺失，一并补上（Neptune 4 为 265mm）
+            machine_data["printable_height"] = ["265"]
+            
+            
         safe_machine = os.path.join(tempfile.gettempdir(), "cli_machine.json")
         with open(safe_machine, 'w', encoding='utf-8') as f:
             json.dump(machine_data, f, ensure_ascii=False, indent=4)
@@ -230,13 +242,16 @@ def to_gcode(cq_object, name="cq_model", output_dir=None, layer_height="0.3mm", 
                     with zip_ref.open(gcode_in_zip) as source, open(temp_extracted_gcode, 'wb') as target:
                         shutil.copyfileobj(source, target)
 
-                    gcode_info = analyze_gcode(temp_extracted_gcode)
-                    print_time = gcode_info["print_time"]
+                    # 分析临时 G-code，提取打印时间与格式化参数字符串
+                    gcode_info = analyze_gcode(temp_extracted_gcode) #analyze_gcode 已经定义，不用生成这个函数
+                    print_time = gcode_info["print_time"]# 出错直接退出，因为不应该出错
 
+                    # 重命名保存至最终输出路径
                     output_gcode_name = f"{clean_name}_{lh_str}mm_{material}_{printer_name}_{print_time}.gcode"
                     final_gcode_path = os.path.join(output_dir, output_gcode_name)
                     shutil.move(temp_extracted_gcode, final_gcode_path)
 
+                    # 输出分析结果与路径
                     print(gcode_info["print_str"], '\n', f"路径 {final_gcode_path}")
                     return final_gcode_path
                 else:
@@ -250,10 +265,11 @@ def to_gcode(cq_object, name="cq_model", output_dir=None, layer_height="0.3mm", 
             if os.path.exists(temp_stl): os.remove(temp_stl)
             if os.path.exists(temp_3mf): os.remove(temp_3mf)
             if os.path.exists(temp_extracted_gcode): os.remove(temp_extracted_gcode)
-            print("    -> [INFO] 清理完毕。")
+            print("   -> [INFO] 清理完毕。")
     else:
         print("[ERROR] 未找到生成的临时 3mf 文件。")
-        return None
+        return None 
+
         
 ########################
 

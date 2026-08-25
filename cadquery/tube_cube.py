@@ -1,7 +1,7 @@
 import cadquery as cq
 
 # ========== 参数定义 ==========
-length = 82.838     # Y方向长度 (mm) —— 【对调】孔沿这个方向排布
+length = 227     # Y方向长度 (mm) —— 【对调】孔沿这个方向排布
 width = 200         # X方向长度 (mm) —— 【对调】孔沿这个方向贯穿
 thickness = 6.3       # Z方向厚度 (mm)
 hole_diam = 4.9       # 孔径 (mm)

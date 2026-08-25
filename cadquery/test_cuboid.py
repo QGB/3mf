@@ -3,9 +3,10 @@ import cadquery as cq
 import bambu_slicer
 # ========== 参数定义 ==========
 l = 82.837116   # X方向外尺寸
+l=200.00002288818357954
 w =200   # Y方向外尺寸
-l=w=10
-h=0.1
+#l=w=10
+h=1
 result = cq.Workplane("XY").workplane(offset=1).box(l, w, h, centered=False)
 
 print(f'{l},{w},{h}')
