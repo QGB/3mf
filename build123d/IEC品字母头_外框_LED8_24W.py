@@ -22,9 +22,12 @@ inner_depth = 20.0    # 内腔深度 (mm)
 base_thickness = 2.0   # 底板厚度 (mm)
 box_height = inner_depth + base_thickness
 
-# -- 附加无底方框参数 (长边24mm外侧) --
-ext_frame_len = 31.0   # 方框长度 (X方向, 对应24mm边居中)
-ext_frame_width = 17.0 # 方框宽度 (Y方向)
+# -- 附加无底倒梯形框参数 (长边24mm外侧) --
+frame_inner_top_len = 29.0   # 上底/共壁侧内圈长度 (X方向)
+frame_inner_bot_len = 31.0   # 下底/最外侧内圈长度 (X方向)
+ext_frame_width = 17.0       # 梯形内部宽度/高度 (Y方向)
+frame_inner_r = 2.0          # 靠近品字头2角(内侧)圆角半径
+frame_outer_r = 0.2          # 最外侧2角(远离品字头)圆角半径
 
 # ============================================================
 # 2. 精确极值计算 (以原点0,0为中心)
@@ -136,69 +139,87 @@ with BuildPart() as box:
                 if (target_v.X - pt[0])**2 + (target_v.Y - pt[1])**2 < 1.0:
                     fillet(target_v, radius=r_in)
 
-    # 5.2 提取内腔的等距扩展作为品字形外墙基础
+    # 5.2 外壁轮廓扩展 (壁厚1.8mm)
     with BuildSketch() as outer_sk:
         add(inner_sk)
         offset(amount=wall_thick, kind=Kind.ARC)
 
-    # 5.3 组合完整的外部实体轮廓 (包含方框及缺口平滑过渡)
-    y_attach_wall = y_min - wall_thick  # -9.8
-    frame_y_center = y_attach_wall - (ext_frame_width / 2.0)
-    
-    with BuildSketch() as full_outer_sk:
-        # 添加品字形主外轮廓
-        add(outer_sk)
-        
-        # 添加下方拓展方框
-        with Locations((0, frame_y_center)):
-            Rectangle(ext_frame_len, ext_frame_width)
-            
-        # 填充两侧缺口：通过斜面从 Y=-2.0 处自然延伸连接至方框，形成梯形填充
-        Polygon([(13.8, -2.0), (15.5, y_attach_wall), (13.8, y_attach_wall)])
-        Polygon([(-13.8, -2.0), (-15.5, y_attach_wall), (-13.8, y_attach_wall)])
-        
-        # --- 动态寻点并应用平滑圆角 ---
-        
-        # (1) 方框远端两侧外圆角: 总长31, 直线要求29, 倒角必为 R=(31-29)/2=1.0mm
-        far_verts = [v for v in full_outer_sk.vertices() if v.Y < y_attach_wall - ext_frame_width + 1.0]
-        if far_verts:
-            fillet(far_verts, radius=1.0)
-            
-        # (2) 过渡缺口外凸角圆角 (让交接处变得丝滑)
-        trans_convex = [v for v in full_outer_sk.vertices() if abs(v.Y - y_attach_wall) < 0.5 and abs(v.X) > 15.0]
-        if trans_convex:
-            fillet(trans_convex, radius=1.5)
-            
-        # (3) 过渡缺口内凹角圆角 (与品字主体直边融合处)
-        trans_obtuse = [v for v in full_outer_sk.vertices() if abs(v.Y - (-2.0)) < 0.5 and abs(v.X) > 13.0]
-        if trans_obtuse:
-            fillet(trans_obtuse, radius=2.0)
-
-    # 5.4 拉伸整体外壳实心基体
+    # 5.3 拉伸品字外壳主体
     extrude(amount=box_height)
 
-    # 5.5 从底板上方开始掏空品字内腔
+    # 5.4 从底板上方掏空品字内腔
     with BuildSketch(Plane.XY.offset(base_thickness)):
         add(inner_sk)
     extrude(amount=inner_depth, mode=Mode.SUBTRACT)
 
-    # 5.6 掏空附属方框内腔 (生成无底贯通方框)
-    with BuildSketch(Plane.XY):
-        with Locations((0, frame_y_center)):
-            Rectangle(ext_frame_len - 2 * wall_thick, ext_frame_width - 2 * wall_thick)
-    extrude(amount=box_height + 5, mode=Mode.SUBTRACT)
-
-    # 5.7 距底部 24mm 长边 5mm 处打贯通长圆孔
+    # 5.5 距底部 24mm 长边 5mm 处打贯通长圆孔
     with BuildSketch(Plane.XY):
         with Locations((0, y_min + slot_dist_from_bot)):
             SlotOverall(width=slot_len, height=slot_h)
     extrude(amount=box_height + 5, mode=Mode.SUBTRACT)
 
-    # 5.8 距顶部短边 4mm 处打 3.4mm 贯通圆孔
+    # 5.6 距顶部短边 4mm 处打 3.4mm 贯通圆孔
     with BuildSketch(Plane.XY):
         with Locations((0, y_max - 4)):
             Circle(radius=3.4 / 2)
     extrude(amount=box_height + 5, mode=Mode.SUBTRACT)
+
+    # 5.7 在 24mm 长边外侧生成无底倒梯形框 (完美实现单层1.8mm共壁厚度)
+    # 【核心修正】：让梯形内腔从 -9.8mm 处开始，外扩1.8mm后梯形外框刚好长到 -8.0mm，
+    # 完全重合在 IEC 外壁预留的这 1.8mm 缝隙里，不再有一丝多余厚度挤占。
+    y_attach_wall = y_min - wall_thick  # -8.0 - 1.8 = -9.8mm (梯形内缘起始点)
+    y_bot = y_attach_wall - ext_frame_width  # -9.8 - 17.0 = -26.8mm (梯形内缘最底端)
+
+    p_top_r = (frame_inner_top_len / 2.0, y_attach_wall)       # (14.5, -9.8)
+    p_bot_r = (frame_inner_bot_len / 2.0, y_bot)               # (15.5, -26.8)
+    p_bot_l = (-frame_inner_bot_len / 2.0, y_bot)              # (-15.5, -26.8)
+    p_top_l = (-frame_inner_top_len / 2.0, y_attach_wall)      # (-14.5, -9.8)
+    
+    # 精确计算梯形外壁最宽处的理论坐标，用于完美填补外侧空隙
+    x_outer_top = frame_inner_top_len / 2.0 + wall_thick       # 14.5 + 1.8 = 16.3mm
+
+    with BuildSketch(Plane.XY) as frame_sk:
+        # 1. 构造带圆角的内侧梯形草图 (处理内腔圆角)
+        with BuildSketch() as sk_in:
+            Polygon([p_top_l, p_top_r, p_bot_r, p_bot_l])
+            top_v = [v for v in sk_in.vertices() if abs(v.Y - y_attach_wall) < 0.1]
+            bot_v = [v for v in sk_in.vertices() if abs(v.Y - y_bot) < 0.1]
+            if top_v and frame_inner_r > 0:
+                fillet(top_v, radius=frame_inner_r)
+            if bot_v and frame_outer_r > 0:
+                fillet(bot_v, radius=frame_outer_r)
+
+        # 2. 向外等距偏移生成梯形外框外圈
+        # (Kind.ARC 保证了即便内圈 0.2，外圈也会自动膨胀为 0.2 + 1.8 = 2.0 的平滑圆角，避免物理上的尖角)
+        with BuildSketch() as sk_out:
+            add(sk_in)
+            offset(amount=wall_thick, kind=Kind.ARC)
+
+        # 3. 构建过渡块：填平左右两端空隙（解决大圆角内缩导致没补上的问题）
+        with BuildSketch() as sk_fill:
+            # 右侧实心填补三角
+            Polygon([
+                # 点1: 品字外壳右直侧的起点，X=13.8，绝对平滑衔接
+                (13.8, y_slant_start-3),       
+                # 点2: 倒梯形右上角外边界坐标，越过大圆角的内缩，强制拉直外轮廓
+                (x_outer_top, y_attach_wall-2), 
+                # 点3: 深入品字实体墙面最厚的地方 (X=12.0 是安全分界，绝不切入品字内腔空洞)
+                (12.0, y_attach_wall)        
+            ])
+            # 左侧实心填补三角
+            Polygon([
+                (-13.8, y_slant_start-3),
+                (-x_outer_top, y_attach_wall-2),
+                (-12.0, y_attach_wall)
+            ])
+
+        # 4. 布尔合成最终框架：外圈 + 过渡连接块 - 掏空内部梯形
+        add(sk_out)
+        add(sk_fill)
+        add(sk_in, mode=Mode.SUBTRACT)
+
+    # 5. 拉伸出 3D 模型
+    extrude(amount=box_height)
 
 print("✅ 模型生成完毕！准备输出。")
 
@@ -210,7 +231,7 @@ import os, bambu_slicer, cadquery as cq
 step_file = os.path.splitext(__file__)[0] + f"_{base_thickness}.step"
 export_step(box.part, step_file)
 cq_object = cq.Shape(box.part.wrapped)
-cq_object = bambu_slicer.add_brim(cq_object, 0)
+#cq_object = bambu_slicer.add_brim(cq_object, 0)
 
 if "show_object" in locals():
     show_object(cq_object, name=step_file[:-5])
