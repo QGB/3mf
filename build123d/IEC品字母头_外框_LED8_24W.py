@@ -196,20 +196,22 @@ with BuildPart() as box:
             offset(amount=wall_thick, kind=Kind.ARC)
 
         # 3. 构建过渡块：填平左右两端空隙（解决大圆角内缩导致没补上的问题）
+        dcy=1
+        dsx=0.14
         with BuildSketch() as sk_fill:
             # 右侧实心填补三角
             Polygon([
                 # 点1: 品字外壳右直侧的起点，X=13.8，绝对平滑衔接
-                (13.8, y_slant_start-3),       
+                (13.8, y_slant_start-dcy),       
                 # 点2: 倒梯形右上角外边界坐标，越过大圆角的内缩，强制拉直外轮廓
-                (x_outer_top, y_attach_wall-2), 
+                (x_outer_top+dsx, y_attach_wall-2), 
                 # 点3: 深入品字实体墙面最厚的地方 (X=12.0 是安全分界，绝不切入品字内腔空洞)
                 (12.0, y_attach_wall)        
             ])
             # 左侧实心填补三角
             Polygon([
-                (-13.8, y_slant_start-3),
-                (-x_outer_top, y_attach_wall-2),
+                (-13.8, y_slant_start-dcy),
+                (-x_outer_top-dsx, y_attach_wall-2),
                 (-12.0, y_attach_wall)
             ])
 
@@ -231,7 +233,7 @@ import os, bambu_slicer, cadquery as cq
 step_file = os.path.splitext(__file__)[0] + f"_{base_thickness}.step"
 export_step(box.part, step_file)
 cq_object = cq.Shape(box.part.wrapped)
-#cq_object = bambu_slicer.add_brim(cq_object, 0)
+cq_object = bambu_slicer.add_brim(cq_object, 0)
 
 if "show_object" in locals():
     show_object(cq_object, name=step_file[:-5])
