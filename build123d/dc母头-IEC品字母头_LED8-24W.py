@@ -20,20 +20,20 @@ inner_depth = 20.0    # 内腔深度 (mm)
 base_thickness = 2.0   # 底板厚度 (mm)
 box_height = inner_depth + base_thickness
 
-frame_inner_top_len = 29.2   # 上底/共壁侧内圈长度 (X方向)
-frame_inner_bot_len = 31.2   # 下底/最外侧内圈长度 (X方向)
-ext_frame_width = 17.2       # 梯形内部宽度/高度 (Y方向)
+frame_inner_top_len = 33.2   # 上底/共壁侧内圈长度 (X方向)
+frame_inner_bot_len = 34.2   # 下底/最外侧内圈长度 (X方向)
+ext_frame_width = 21       # 梯形内部宽度/高度 (Y方向)
 frame_inner_r = 2.0          # 靠近品字头2角(内侧)圆角半径
 frame_outer_r = 0.2          # 最外侧2角(远离品字头)圆角半径
 
 # --- DC 母头参数 ---
 corner_r = 1.0         # 矩形内角倒角半径 (mm)
-inner_l = 14.0         # 底部长方形长度 X (mm)
-inner_w = 12.0         # 底部长方形宽度 Y (mm)
+inner_l = 14.1         # 底部长方形长度 X (mm)
+inner_w = 12.1         # 底部长方形宽度 Y (mm)
 base_h = 14.0          # 矩形段高度 (mm)
 sq_side = 11.0         # 收缩顶端正方形边长 (mm)
 taper_h = 10.0         # 收缩高度 (mm)
-dc_inner_dia = 10.5    # DC 母头外径 / 贯通内孔直径 (mm)
+dc_inner_dia = 12.2   # LED 白母头外径 / 贯通内孔直径 (mm)
 top_h = 9.0            # 顶部圆柱高度 (mm)
 
 # ============================================================
