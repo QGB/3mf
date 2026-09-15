@@ -22,7 +22,7 @@ box_height = inner_depth + base_thickness
 
 frame_inner_top_len = 33.2   # 上底/共壁侧内圈长度 (X方向)
 frame_inner_bot_len = 34.2   # 下底/最外侧内圈长度 (X方向)
-ext_frame_width = 21       # 梯形内部宽度/高度 (Y方向)
+ext_frame_width = 21       # 梯形内部高度 (Y方向)
 frame_inner_r = 2.0          # 靠近品字头2角(内侧)圆角半径
 frame_outer_r = 0.2          # 最外侧2角(远离品字头)圆角半径
 
