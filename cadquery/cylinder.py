@@ -12,6 +12,7 @@ outer_diam,inner_diam,height =20.9,6.5,14   #水龙头28
 outer_diam,inner_diam,height=100,30.5,0.3   #水龙头28
 
 outer_diam,inner_diam,height=32.2,20.5,14
+outer_diam,inner_diam,height=25,16.2,10
 # 计算半径
 outer_rad = outer_diam / 2.0    
 inner_rad = inner_diam / 2.0
