@@ -13,23 +13,21 @@ outer_diam,inner_diam,height=100,30.5,0.3   #水龙头28
 
 outer_diam,inner_diam,height=32.2,20.5,14
 outer_diam,inner_diam,height=25,16.2,10
-outer_diam,inner_diam,height=25,16.2,13
+outer_diam,inner_diam,height=24,16.3,22
 # 计算半径
 outer_rad = outer_diam / 2.0    
 inner_rad = inner_diam / 2.0
 
 # ========== 建模 ==========
 # 创建外圆柱体（实心）
-result = cq.Workplane("XY").circle(outer_rad).extrude(height)
-
-# 挖出中心通孔（直径 = inner_diam）
 result = (
-    result.faces(">Z")          # 选择上表面
-    .workplane()                # 在该表面创建新工作平面
-    .circle(inner_rad)          # 内孔圆
-    .cutThruAll()               # 完全穿透
+    # 底座 Φ24 H22
+cq.Workplane("XY").circle(outer_rad).extrude(height)
+.faces("XY").circle(16).extrude(height-1.5)
+.faces("XY").circle(20).extrude(height-4)
+    # 再打通孔，cutThruAll穿透底座+凸台
+.faces(">Z").circle(inner_rad).cutThruAll()
 )
-
 import os,bambu_slicer
 step_file = os.path.splitext(__file__)[0] + f"_D{outer_diam}d{inner_diam}H{height}.step"
 #result =  result.union(cq.Workplane("XY").circle(47/2).extrude(0.2))
